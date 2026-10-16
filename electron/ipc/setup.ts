@@ -1,0 +1,130 @@
+import { ipcMain } from 'electron'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { IPC, type SetupResult, type SetupState } from '../../shared/ipc.ts'
+import { log } from '../log.ts'
+import { loadPty } from './terminal.ts'
+
+/*
+ * First-boot setup on the Veritas OS image: the image's first boot made the account (no password)
+ * and installed Hermes; the person names it, sets a password, joins Wi-Fi and signs in to Hermes.
+ * Nothing here needs root: `passwd` changes the person's own password (the current one is empty on
+ * a new account), and the name Veritas greets with lives in ~/.config/herald-os/name.
+ */
+
+const FIRSTBOOT_DONE = '/var/lib/herald-os/firstboot-done'
+const configDir = () => path.join(os.homedir(), '.config', 'herald-os')
+const doneFile = () => path.join(configDir(), 'setup-done')
+export const nameFile = (): string => path.join(configDir(), 'name')
+
+export function setupState(): SetupState {
+  const image = fs.existsSync(FIRSTBOOT_DONE) || process.env.HERALD_OS_FORCE_SETUP === '1'
+  let name = ''
+
+  try {
+    name = fs.readFileSync(nameFile(), 'utf8').trim()
+  } catch {
+    // Not named yet.
+  }
+
+  return { needed: process.platform === 'linux' && image && !fs.existsSync(doneFile()), user: os.userInfo().username, name }
+}
+
+/** What `passwd` asks (LANG=C), most specific first: "Retype new password:" also ends in "new password:". */
+export function passwdReply(screen: string, password: string, current: string): string | null {
+  const tail = screen.slice(-160).toLowerCase()
+
+  if (/retype new password:\s*$/.test(tail)) {
+    return `${password}\r`
+  }
+
+  if (/new password:\s*$/.test(tail)) {
+    return `${password}\r`
+  }
+
+  if (/(current|\(current\) unix|old) password:\s*$/.test(tail) || /password:\s*$/.test(tail)) {
+    return `${current}\r`
+  }
+
+  return null
+}
+
+/** `passwd` for this account, answered through a terminal; the reason when it refuses (too short, too simple). */
+export function changePassword(password: string, current = ''): Promise<SetupResult> {
+  const pty = loadPty()
+
+  if (!pty) {
+    return Promise.resolve({ ok: false, error: 'The terminal library is missing, so the password cannot be set here; run `passwd` in a terminal.' })
+  }
+
+  return new Promise(resolve => {
+    const child = pty.spawn('passwd', [], { name: 'xterm', cols: 100, rows: 24, cwd: os.homedir(), env: { ...process.env, LANG: 'C', LC_ALL: 'C' } })
+    let screen = ''
+    let refusal = ''
+    const timer = setTimeout(() => {
+      child.kill()
+      resolve({ ok: false, error: 'passwd did not finish' })
+    }, 30_000)
+
+    child.onData(data => {
+      screen += data
+      const bad = /BAD PASSWORD: ([^\r\n]+)/.exec(screen)
+
+      if (bad?.[1]) {
+        // pwquality refused it and would ask again; stop and say why.
+        refusal = bad[1].trim()
+        child.kill()
+
+        return
+      }
+
+      const reply = passwdReply(screen, password, current)
+
+      if (reply !== null) {
+        screen = ''
+        child.write(reply)
+      }
+    })
+    child.onExit(({ exitCode }) => {
+      clearTimeout(timer)
+
+      if (exitCode === 0) {
+        resolve({ ok: true })
+      } else {
+        const last = screen.split(/\r?\n/).map(line => line.trim()).filter(Boolean).pop() ?? ''
+        log('setup', `passwd exited ${exitCode}: ${refusal || last}`)
+        resolve({ ok: false, error: refusal ? `That password was refused: ${refusal}.` : last || 'passwd refused the change' })
+      }
+    })
+  })
+}
+
+export function registerSetupIpc(): void {
+  ipcMain.handle(IPC.setupState, () => setupState())
+  ipcMain.handle(IPC.setupName, (_event, name: string) => {
+    const clean = String(name ?? '').replace(/[\r\n:]/g, ' ').trim().slice(0, 64)
+    fs.mkdirSync(configDir(), { recursive: true })
+    fs.writeFileSync(nameFile(), `${clean}\n`)
+
+    return { ok: true } satisfies SetupResult
+  })
+  ipcMain.handle(IPC.setupPassword, (_event, password: string) => {
+    const value = String(password ?? '')
+
+    if (value.length < 8 || /[\r\n]/.test(value)) {
+      return { ok: false, error: 'Use at least 8 characters.' } satisfies SetupResult
+    }
+
+    return changePassword(value)
+  })
+  // `later`: set up for someone else; setup shows again for them at the next start.
+  ipcMain.handle(IPC.setupFinish, (_event, options: { later?: boolean } = {}) => {
+    if (!options.later) {
+      fs.mkdirSync(configDir(), { recursive: true })
+      fs.writeFileSync(doneFile(), `${new Date().toISOString()}\n`)
+    }
+
+    return { ok: true } satisfies SetupResult
+  })
+}

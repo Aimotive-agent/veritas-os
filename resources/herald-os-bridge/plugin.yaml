@@ -1,0 +1,26 @@
+name: herald-os-bridge
+version: 0.1.0
+description: "Herald OS system bridge: lets Hermes act on this computer through explicit, permission-tiered tools (system info, processes, Spotlight search, apps, open, kill, files, reading documents with OCR, and the herald-os control surface on Herald OS Linux). Every action is audited; mutating and destructive actions go through the standard approval gate."
+author: Luke The Dev
+kind: standalone
+requires_hermes: ">=0.21"
+platforms:
+  - macos
+  - linux
+  - windows
+provides_tools:
+  - os_ui
+  - canvas
+  - system_network
+  - system_control
+  - system_logs
+  - system_info
+  - system_processes
+  - system_disk_usage
+  - system_find_files
+  - system_apps
+  - system_open
+  - system_kill_process
+  - system_files
+  - system_documents
+  - system_os

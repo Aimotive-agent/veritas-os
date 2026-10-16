@@ -1,0 +1,79 @@
+{
+  "id": "developer",
+  "label": "Developer",
+  "order": 2,
+  "description": "Languages through mise (per user, no root), containers through Podman.",
+  "entries": [
+    {
+      "id": "mise",
+      "label": "mise",
+      "description": "Installs and switches language versions; every language below uses it.",
+      "bin": ["mise"],
+      "install": [{ "kind": "script", "ref": "mise" }]
+    },
+    { "id": "node", "label": "Node.js", "description": "JavaScript on the server, with npm (LTS).", "install": [{ "kind": "mise", "ref": "node@lts" }] },
+    { "id": "bun", "label": "Bun", "description": "A fast JavaScript runtime, bundler and package manager.", "install": [{ "kind": "mise", "ref": "bun@latest" }] },
+    { "id": "deno", "label": "Deno", "description": "A secure JavaScript and TypeScript runtime.", "install": [{ "kind": "mise", "ref": "deno@latest" }] },
+    { "id": "python", "label": "Python", "description": "The latest Python, separate from the system's.", "install": [{ "kind": "mise", "ref": "python@latest" }] },
+    { "id": "go", "label": "Go", "description": "Google's language for fast, simple services.", "install": [{ "kind": "mise", "ref": "go@latest" }] },
+    { "id": "rust", "label": "Rust", "description": "Rust with cargo, through rustup.", "install": [{ "kind": "mise", "ref": "rust@latest" }] },
+    { "id": "ruby", "label": "Ruby", "description": "The latest Ruby.", "install": [{ "kind": "mise", "ref": "ruby@latest" }] },
+    {
+      "id": "rails",
+      "label": "Ruby on Rails",
+      "description": "Ruby and the Rails framework.",
+      "detect": ["~/.local/share/mise/shims/rails"],
+      "install": [{ "kind": "mise", "ref": "ruby@latest", "then": [["gem", "install", "rails"]] }]
+    },
+    {
+      "id": "php",
+      "label": "PHP",
+      "description": "PHP with Composer.",
+      "bin": ["php"],
+      "install": [
+        { "kind": "dnf", "ref": "php-cli php-pdo php-mbstring php-xml composer" },
+        { "kind": "pacman", "ref": "php composer" }
+      ]
+    },
+    {
+      "id": "laravel",
+      "label": "Laravel",
+      "description": "PHP, Composer and the Laravel installer.",
+      "detect": ["~/.config/composer/vendor/bin/laravel"],
+      "install": [{ "kind": "script", "ref": "laravel" }]
+    },
+    { "id": "java", "label": "Java", "description": "OpenJDK 21 (LTS).", "install": [{ "kind": "mise", "ref": "java@21" }] },
+    {
+      "id": "elixir",
+      "label": "Elixir",
+      "description": "Elixir and Erlang/OTP.",
+      "bin": ["elixir"],
+      "install": [
+        { "kind": "dnf", "ref": "elixir" },
+        { "kind": "pacman", "ref": "elixir" }
+      ]
+    },
+    {
+      "id": "dotnet",
+      "label": ".NET",
+      "description": "The .NET SDK (LTS).",
+      "bin": ["dotnet"],
+      "install": [
+        { "kind": "dnf", "ref": "dotnet-sdk-8.0" },
+        { "kind": "pacman", "ref": "dotnet-sdk" }
+      ]
+    },
+    { "id": "zig", "label": "Zig", "description": "A small systems language and C toolchain.", "install": [{ "kind": "mise", "ref": "zig@latest" }] },
+    {
+      "id": "podman",
+      "label": "Podman",
+      "description": "Containers without a daemon; docker and docker compose work through it.",
+      "bin": ["podman"],
+      "install": [
+        { "kind": "dnf", "ref": "podman podman-docker podman-compose" },
+        { "kind": "pacman", "ref": "podman podman-docker podman-compose" }
+      ]
+    },
+    { "id": "lazydocker", "label": "lazydocker", "description": "A terminal dashboard for containers.", "install": [{ "kind": "mise", "ref": "lazydocker@latest" }] }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+    "name": "herald-ocean",
+    "label": "Veritas Ocean",
+    "description": "Deep blue glass on a living wallpaper. The default.",
+    "shell": {
+        "theme": "ocean",
+        "accent": "blue"
+    },
+    "wallpaper": "default",
+    "colors": {
+        "bg": "#04113f",
+        "bg2": "#0a2a96",
+        "surface": "#0b1c5a",
+        "fg": "#e9eefb",
+        "fg_dim": "#9fb0dc",
+        "accent": "#4d92ff",
+        "accent_strong": "#5296ff",
+        "border_active": "#4d92ff",
+        "border_inactive": "#1c2c66",
+        "urgent": "#ff6b6b",
+        "ok": "#36e6a6",
+        "warn": "#f2c25e"
+    },
+    "gtk": {
+        "color_scheme": "prefer-dark",
+        "theme": "Adwaita-dark"
+    },
+    "terminal": {
+        "background": "#050f33",
+        "foreground": "#e9eefb",
+        "cursor": "#5296ff",
+        "palette": [
+            "#0b1c5a",
+            "#ff6d6d",
+            "#36e6a6",
+            "#f2c25e",
+            "#5296ff",
+            "#b47cff",
+            "#4cc2ff",
+            "#e9eefb",
+            "#2a3a7a",
+            "#ff8a8a",
+            "#6fffc4",
+            "#ffd67a",
+            "#7fb0ff",
+            "#c9a0ff",
+            "#8ad9ff",
+            "#ffffff"
+        ]
+    }
+}

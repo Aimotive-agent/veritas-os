@@ -1,0 +1,51 @@
+{
+    "name": "herald-graphite",
+    "label": "Veritas Graphite",
+    "description": "Neutral dark with a gold accent; the original alpha look.",
+    "shell": {
+        "theme": "graphite",
+        "accent": "blue"
+    },
+    "wallpaper": "default",
+    "colors": {
+        "bg": "#07080a",
+        "bg2": "#11141a",
+        "surface": "#171b22",
+        "fg": "#ececec",
+        "fg_dim": "#9aa0ab",
+        "accent": "#e6b84a",
+        "accent_strong": "#f2c85c",
+        "border_active": "#e6b84a",
+        "border_inactive": "#2a2f38",
+        "urgent": "#ff6b6b",
+        "ok": "#36e6a6",
+        "warn": "#f2c25e"
+    },
+    "gtk": {
+        "color_scheme": "prefer-dark",
+        "theme": "Adwaita-dark"
+    },
+    "terminal": {
+        "background": "#07080a",
+        "foreground": "#ececec",
+        "cursor": "#f2c85c",
+        "palette": [
+            "#171b22",
+            "#ff6d6d",
+            "#36e6a6",
+            "#f2c25e",
+            "#6aa6ff",
+            "#b47cff",
+            "#4cc2ff",
+            "#ececec",
+            "#2a2f38",
+            "#ff8a8a",
+            "#6fffc4",
+            "#ffd67a",
+            "#9cc3ff",
+            "#c9a0ff",
+            "#8ad9ff",
+            "#ffffff"
+        ]
+    }
+}

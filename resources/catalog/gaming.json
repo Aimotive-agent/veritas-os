@@ -1,0 +1,26 @@
+{
+  "id": "gaming",
+  "label": "Gaming",
+  "order": 5,
+  "description": "Game stores and launchers. Most need an x86_64 PC; streaming works anywhere.",
+  "entries": [
+    { "id": "steam", "label": "Steam", "description": "Valve's store, with Proton for Windows games.", "arch": ["x86_64"], "install": [{ "kind": "flatpak", "ref": "com.valvesoftware.Steam" }] },
+    { "id": "retroarch", "label": "RetroArch", "description": "Emulators for classic consoles in one app.", "install": [{ "kind": "flatpak", "ref": "org.libretro.RetroArch" }] },
+    { "id": "lutris", "label": "Lutris", "description": "One library for games from every store and emulator.", "arch": ["x86_64"], "install": [{ "kind": "flatpak", "ref": "net.lutris.Lutris" }] },
+    { "id": "heroic", "label": "Heroic", "description": "Epic, GOG and Amazon games.", "arch": ["x86_64"], "install": [{ "kind": "flatpak", "ref": "com.heroicgameslauncher.hgl" }] },
+    { "id": "prism-launcher", "label": "Prism Launcher", "description": "Minecraft, with mods and several instances.", "install": [{ "kind": "flatpak", "ref": "org.prismlauncher.PrismLauncher" }] },
+    { "id": "moonlight", "label": "Moonlight", "description": "Stream games from your gaming PC.", "install": [{ "kind": "flatpak", "ref": "com.moonlight_stream.Moonlight" }] },
+    {
+      "id": "geforce-now",
+      "label": "GeForce NOW",
+      "description": "NVIDIA's cloud gaming, as a web app.",
+      "install": [{ "kind": "webapp", "ref": "https://play.geforcenow.com", "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/nvidia.png" }]
+    },
+    {
+      "id": "xbox-cloud",
+      "label": "Xbox Cloud Gaming",
+      "description": "Game Pass in the cloud, as a web app.",
+      "install": [{ "kind": "webapp", "ref": "https://www.xbox.com/play", "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/xbox.png" }]
+    }
+  ]
+}

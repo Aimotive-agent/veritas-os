@@ -1,0 +1,16 @@
+{
+  "id": "media",
+  "label": "Media and office",
+  "order": 7,
+  "description": "Record, edit, watch, sign and back up.",
+  "entries": [
+    { "id": "obs", "label": "OBS Studio", "description": "Record and stream your screen and cameras.", "install": [{ "kind": "flatpak", "ref": "com.obsproject.Studio" }] },
+    { "id": "kdenlive", "label": "Kdenlive", "description": "A full video editor.", "install": [{ "kind": "flatpak", "ref": "org.kde.kdenlive" }] },
+    { "id": "mpv", "label": "mpv", "description": "A minimal video player that plays everything.", "install": [{ "kind": "flatpak", "ref": "io.mpv.Mpv" }] },
+    { "id": "pinta", "label": "Pinta", "description": "Simple image editing, like Paint.NET.", "install": [{ "kind": "flatpak", "ref": "com.github.PintaProject.Pinta" }] },
+    { "id": "video-trimmer", "label": "Video Trimmer", "description": "Cut a clip out of a video without re-encoding.", "install": [{ "kind": "flatpak", "ref": "org.gnome.gitlab.YaLTeR.VideoTrimmer" }] },
+    { "id": "snapshot", "label": "Snapshot", "description": "Take photos and videos with the webcam.", "install": [{ "kind": "flatpak", "ref": "org.gnome.Snapshot" }] },
+    { "id": "xournalpp", "label": "Xournal++", "description": "Handwritten notes, and filling in and signing PDFs.", "install": [{ "kind": "flatpak", "ref": "com.github.xournalpp.xournalpp" }] },
+    { "id": "deja-dup", "label": "Déjà Dup", "description": "Simple, encrypted backups of your home folder.", "install": [{ "kind": "flatpak", "ref": "org.gnome.DejaDup" }] }
+  ]
+}
