@@ -1,6 +1,6 @@
 # Veritas OS
 
-**An agent-native desktop shell — a multi-agent fork of **Herald OS** that turns "one agent" into a control room for all of them.**
+**An agent-native desktop shell — a multi-agent fork of Herald OS that turns "one agent" into a control room for all of them.**
 
 Veritas OS is a full desktop environment built around AI agents. It looks and works like a small operating system — dock, windows, spaces, files, canvas, capture, terminal — but the centre of gravity is a **multi-agent hub**: run Hermes, OpenCode, and any other CLI coding agent you install, side by side, and **control and monitor every one of them from the same shell**.
 
