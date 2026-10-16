@@ -1,7 +1,11 @@
 import { IconMessageChatbot, IconPlus, IconSparkles, IconX } from '@tabler/icons-react'
-import { useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { useEffect, useState } from 'react'
 import { HERALD_EVENTS, type HeraldEventName } from '../../../shared/events.ts'
 import { Chips, GlassButton, GlassCard } from '../../components/ui/glass.tsx'
+import { cn } from '../../lib/cn.ts'
+import { $agentPages, bindAgentPages } from '../../store/agent-pages.ts'
+import { notify } from '../../store/notifications.ts'
 import { sendPrompt } from '../../store/chat.ts'
 import { showPage } from '../../store/windows.ts'
 import type { CronJobDraft, DeliveryTarget } from './api.ts'
@@ -38,6 +42,22 @@ export function NewAutomationForm({ targets, creating, onCreate, onCancel }: { t
   const [matchValue, setMatchValue] = useState('')
   const [prompt, setPrompt] = useState('')
   const [deliver, setDeliver] = useState('local')
+  const [agentId, setAgentId] = useState('hermes')
+  bindAgentPages()
+  const extraAgents = useStore($agentPages)
+  // Only agents that know how to run a prompt can take an automation; Hermes always can.
+  const runAgents = [
+    { id: 'hermes', name: 'Hermes' },
+    ...extraAgents.filter(agent => agent.canRun).map(agent => ({ id: agent.id, name: agent.name }))
+  ]
+  const shellOwned = agentId !== 'hermes'
+
+  // A schedule the shell owns needs a cron line; an event trigger is Hermes' job.
+  useEffect(() => {
+    if (shellOwned && mode === 'event') {
+      setMode('schedule')
+    }
+  }, [shellOwned, mode])
 
   const canCreate = (mode === 'event' || schedule.trim().length > 0) && prompt.trim().length > 0 && !creating
   const preview = humanizeCronExpr(schedule.trim())
@@ -49,6 +69,16 @@ export function NewAutomationForm({ targets, creating, onCreate, onCancel }: { t
     }
 
     const draft = { name: name.trim(), schedule: schedule.trim(), prompt: prompt.trim(), deliver }
+
+    // Another agent means the shell owns the schedule and hands it the prompt when it fires.
+    if (shellOwned) {
+      await window.heraldOS.shellAutomations.create({ name: draft.name, schedule: draft.schedule, agentId, prompt: draft.prompt })
+
+      notify({ title: 'Automation created', body: `Runs on ${runAgents.find(a => a.id === agentId)?.name ?? agentId} — see Scheduler below.`, level: 'success' })
+      onCancel()
+
+      return
+    }
 
     await (mode === 'event' ? onCreate(draft, { event, match: matcher && matchValue.trim() ? { [matcher.key]: matchValue.trim() } : undefined }) : onCreate(draft))
   }
@@ -125,6 +155,33 @@ export function NewAutomationForm({ targets, creating, onCreate, onCancel }: { t
             ))}
           </SelectInput>
           <Hint>{isLocalDelivery(deliver) ? 'Results are saved as a briefing you can open in Hermes.' : 'Hermes posts the result to the platform’s home channel when the run finishes.'}</Hint>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <FieldLabel>Run with</FieldLabel>
+          <div className="flex flex-wrap items-center gap-2">
+            {runAgents.map(candidate => {
+              const active = candidate.id === agentId
+
+              return (
+                <button
+                  key={candidate.id}
+                  type="button"
+                  onClick={() => setAgentId(candidate.id)}
+                  className={cn(
+                    'rounded-full border px-3 py-1 text-[12px] transition-colors',
+                    active ? 'border-accent-strong/60 bg-accent text-accent-fg' : 'border-line bg-white/5 text-fg-2 hover:bg-white/10 hover:text-fg'
+                  )}
+                >
+                  {candidate.name}
+                </button>
+              )
+            })}
+          </div>
+          <Hint>
+            {shellOwned
+              ? `The shell runs this on ${runAgents.find(a => a.id === agentId)?.name ?? agentId} when the schedule fires.`
+              : 'Hermes runs it and can deliver the result anywhere.'}
+          </Hint>
         </div>
       </form>
 

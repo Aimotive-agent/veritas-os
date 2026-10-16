@@ -15,6 +15,7 @@ import { AutomationDetail } from './AutomationDetail.tsx'
 import { formatNextRun, formatRunDuration, formatRunTimestamp, humanizeSchedule, toMs } from './cron-humanize.ts'
 import { type JobMenuAction, JobMenu } from './JobMenu.tsx'
 import { type EventTrigger, NewAutomationForm } from './NewAutomationForm.tsx'
+import { ShellAutomationsList } from './ShellAutomationsList.tsx'
 import { JobTile } from './presentation.tsx'
 
 const RUN_SOURCES = 5
@@ -311,6 +312,11 @@ export function AutomationsPage() {
                 }
               >
                 <RecentRuns rows={runRows.slice(0, allRuns ? RUNS_EXPANDED : RUNS_COLLAPSED)} loading={runs.loading && runs.data === null} />
+              </Section>
+
+              {/* Schedules the shell owns: they run on another agent, not Hermes. */}
+              <Section title="On other agents">
+                <ShellAutomationsList />
               </Section>
             </>
           )}

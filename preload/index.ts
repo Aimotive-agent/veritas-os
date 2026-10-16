@@ -4,6 +4,8 @@ import {
   type AgentSnapshot,
   type BrowserOsInfo,
   type BrowserTab,
+  type ShellAutomation,
+  type ShellAutomationDraft,
   type AudioWsKind,
   type AuditEntry,
   type BackendState,
@@ -428,6 +430,15 @@ const api = {
     run: (id: string, goal: string): Promise<void> => ipcRenderer.invoke(IPC.agentsRun, id, goal),
     /** Fires whenever any extra agent changes state (list is the fresh snapshot). */
     onChanged: (listener: (agents: AgentSnapshot[]) => void): Unsubscribe => subscribe<AgentSnapshot[]>(IPC.agentsChanged, listener)
+  },
+  /** Automations the shell owns (they run on an agent other than Hermes). */
+  shellAutomations: {
+    list: (): Promise<ShellAutomation[]> => ipcRenderer.invoke(IPC.shellAutomationsList),
+    create: (draft: ShellAutomationDraft): Promise<string> => ipcRenderer.invoke(IPC.shellAutomationsCreate, draft),
+    update: (id: string, patch: Partial<ShellAutomation>): Promise<ShellAutomation[]> => ipcRenderer.invoke(IPC.shellAutomationsUpdate, id, patch),
+    remove: (id: string): Promise<ShellAutomation[]> => ipcRenderer.invoke(IPC.shellAutomationsRemove, id),
+    run: (id: string): Promise<ShellAutomation[]> => ipcRenderer.invoke(IPC.shellAutomationsRun, id),
+    onChanged: (listener: (automations: ShellAutomation[]) => void): Unsubscribe => subscribe<ShellAutomation[]>(IPC.shellAutomationsChanged, listener)
   },
   bridge: {
     readPolicy: (): Promise<string> => ipcRenderer.invoke(IPC.bridgePolicyRead),

@@ -32,6 +32,7 @@ import { registerWebIpc } from './ipc/web.ts'
 import { registerAgentsIpc } from './agents/ipc.ts'
 import { registerBrowserIpc } from './ipc/browser.ts'
 import { AgentManager } from './agents/manager.ts'
+import { ShellAutomations } from './agents/automations.ts'
 import { log, logTail } from './log.ts'
 import { migrateLegacyData } from './migrate.ts'
 import { registerNotificationHistoryIpc } from './notifications-history.ts'
@@ -85,6 +86,14 @@ for (const line of migrateLegacyData({ hermesHome: hermesHome(), appData: app.ge
 const backend = new BackendManager()
 /** Extra agents (OpenCode, plus ~/.config/veritas-os/agents.json entries) beside the Hermes backend. */
 const agents = new AgentManager()
+/** Shell-owned automations: schedules that run on an agent other than Hermes. */
+const shellAutomations = new ShellAutomations(agents, () => {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) {
+      window.webContents.send(IPC.shellAutomationsChanged, shellAutomations.list())
+    }
+  }
+})
 let mainWindow: BrowserWindow | null = null
 const mode = shellMode()
 // Panels mode (niri): several surface windows, compositor state mirror, control socket for hotkeys.
@@ -308,7 +317,7 @@ function registerCoreIpc(): void {
   registerTerminalIpc(() => mainWindow)
   registerVoiceIpc(backend)
   // Desktop mode layers pages over the shell window; panels mode gives them compositor windows.
-  registerAgentsIpc(agents)
+  registerAgentsIpc(agents, shellAutomations)
   registerBrowserIpc()
   const webViews = registerWebIpc(mode === 'desktop')
   registerEditIpc(() => webViews)
@@ -388,6 +397,7 @@ app.whenReady().then(async () => {
   applyVoiceHotkey(voicePrefs.enabled ? voicePrefs.hotkey : '', () => BrowserWindow.getAllWindows())
   void backend.start()
   void agents.startDefaults()
+  shellAutomations.start()
 })
 
 app.on('second-instance', () => {
@@ -428,5 +438,6 @@ app.on('before-quit', event => {
   notifications?.stop()
   panels?.stop()
   appHost?.stop()
+  shellAutomations.stop()
   void Promise.allSettled([backend.stop(), agents.stopAll()]).finally(() => app.quit())
 })

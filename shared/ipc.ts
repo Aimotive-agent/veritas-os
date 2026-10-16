@@ -724,6 +724,15 @@ export const IPC = {
   /** Hand a mission goal to an agent that can run one. */
   agentsRun: 'herald-os:agents:run',
 
+  /** Automations the shell owns because they run on an agent other than Hermes. */
+  shellAutomationsList: 'herald-os:automations:list',
+  shellAutomationsCreate: 'herald-os:automations:create',
+  shellAutomationsUpdate: 'herald-os:automations:update',
+  shellAutomationsRemove: 'herald-os:automations:remove',
+  shellAutomationsRun: 'herald-os:automations:run',
+  /** main -> renderer: the shell automations changed. */
+  shellAutomationsChanged: 'herald-os:automations:changed',
+
   /** BrowserOS: the user's own AI browser, used as the shell's "real" browser. */
   browserStatus: 'herald-os:browser:status',
   browserLaunch: 'herald-os:browser:launch',
@@ -1131,4 +1140,27 @@ export interface BrowserTab {
   id: string
   title: string
   url: string
+}
+
+/** An automation the shell schedules and hands to a chosen agent. */
+export interface ShellAutomation {
+  id: string
+  name: string
+  /** Standard 5-field cron: `minute hour day-of-month month day-of-week`. */
+  schedule: string
+  agentId: string
+  prompt: string
+  enabled: boolean
+  runCount: number
+  createdAt: number
+  lastRunAt?: number
+  lastError?: string
+}
+
+export interface ShellAutomationDraft {
+  name: string
+  schedule: string
+  agentId: string
+  prompt: string
+  enabled?: boolean
 }
