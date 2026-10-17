@@ -1,3 +1,3 @@
 #!/bin/bash
-cd "/home/chrispc/Documents/Default Project/veritas-os"
+cd "/home/chrisltp/Work/veritas-os"
 exec ./node_modules/.bin/electron .

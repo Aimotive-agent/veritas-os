@@ -188,7 +188,7 @@ function AgentCard({
   }
 
   return (
-    <GlassCard className="flex flex-col gap-3 p-4">
+    <GlassCard className="relative z-10 flex flex-col gap-3 p-4">
       <div className="flex items-center gap-4">
         <StatusDot tone={tone} pulse={agent.phase === 'starting' || agent.phase === 'restarting'} />
         <div className="min-w-0 flex-1">
@@ -233,7 +233,7 @@ function AgentCard({
         </div>
       </div>
       {pair ? (
-        <div className="flex flex-col gap-2 rounded-lg border border-line bg-black/25 p-3">
+        <div className="relative z-10 flex flex-col gap-2 rounded-lg border border-line bg-black/25 p-3">
           <div className="text-[11.5px] text-fg-3">
             {pair.links.length ? 'One-time link — works once, expires in 5 minutes.' : 'No link was printed:'}
           </div>
