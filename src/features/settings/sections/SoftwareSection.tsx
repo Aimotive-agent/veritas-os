@@ -5,10 +5,10 @@ import type { CatalogEntryView } from '../../../../shared/ipc.ts'
 import { GlassButton, Pill } from '../../../components/ui/glass.tsx'
 import { Spinner } from '../../../components/ui/primitives.tsx'
 import { hostPlatform } from '../../../lib/platform-labels.ts'
-import { $catalog, loadCatalog, runCatalog, useWithHermes } from '../../../store/catalog.ts'
-import { notify } from '../../../store/notifications.ts'
+import { $catalog, loadCatalog, runCatalog } from '../../../store/catalog.ts'
 import { openTerminalProgram } from '../../../store/terminal.ts'
-import { errorText, InlineNote, MenuDropdown, SectionTitle, SettingsGroup, SettingsRow } from './shared.tsx'
+import { InlineNote, SectionTitle, SettingsGroup, SettingsRow } from './shared.tsx'
+import { UseWithHermes } from '../../agents/UseWithHermes.tsx'
 
 const GROUP_ICONS: Record<string, ComponentType<{ size?: number }>> = {
   ai: IconBrain,
@@ -107,41 +107,4 @@ function CatalogRow({ entry, icon, busy }: { entry: CatalogEntryView; icon: Reac
       )}
     </SettingsRow>
   )
-}
-
-/** Point Hermes at one of the local server's models. */
-function UseWithHermes({ kind, label }: { kind: 'ollama' | 'lmstudio'; label: string }) {
-  const [models, setModels] = useState<string[] | null>(null)
-  const [loading, setLoading] = useState(false)
-
-  const load = async () => {
-    setLoading(true)
-
-    try {
-      setModels(await window.heraldOS.catalog.localModels(kind))
-    } catch (error) {
-      notify({ title: `${label} is not ready`, body: errorText(error), level: 'warn' })
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const choose = async (model: string) => {
-    try {
-      await useWithHermes(kind, model)
-      notify({ title: `Hermes uses ${model}`, body: `Through ${label} on this computer; switch back in Settings > Hermes & agents.`, level: 'success' })
-    } catch (error) {
-      notify({ title: 'Could not switch Hermes', body: errorText(error), level: 'error' })
-    }
-  }
-
-  if (!models) {
-    return (
-      <GlassButton size="sm" onClick={() => void load()} disabled={loading} aria-label={`Use ${label} with Hermes`}>
-        {loading ? <Spinner /> : <IconBrain size={14} />} Use with Hermes
-      </GlassButton>
-    )
-  }
-
-  return <MenuDropdown ariaLabel={`Model on ${label}`} label="Choose a model" items={models.map(model => ({ id: model, label: model }))} onSelect={model => void choose(model)} />
 }
