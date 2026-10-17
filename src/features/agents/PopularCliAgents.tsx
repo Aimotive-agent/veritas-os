@@ -68,7 +68,7 @@ export function PopularCliAgents() {
                 </div>
                 <div className="mt-0.5 line-clamp-2 text-[12px] leading-snug text-fg-3">{entry.description}</div>
                 <div className="mt-2.5 flex flex-wrap items-center gap-2">
-                  {installed && bin ? (
+                  {installed && entry.terminal && bin ? (
                     <GlassButton size="sm" variant="secondary" onClick={() => openTerminalProgram(entry.id, entry.label)}>
                       <IconPlayerPlay /> Open in Terminal
                     </GlassButton>

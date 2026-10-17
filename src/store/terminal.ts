@@ -12,6 +12,12 @@ export interface TerminalAgent {
 
 export const $terminalAgents = atom<TerminalAgent[]>([])
 
+/**
+ * A per-agent counter that increments each time the agent is (re)opened. The embedded terminal page
+ * keys its PTY on it, so "open" after a close starts a fresh process.
+ */
+export const $terminalRuns = atom<Record<string, number>>({})
+
 /** Remember that a terminal agent was opened (deduped by id) so the sidebar can offer it again. */
 export function pinTerminalAgent(id: string, label: string): void {
   const current = $terminalAgents.get()
@@ -19,6 +25,11 @@ export function pinTerminalAgent(id: string, label: string): void {
   if (!current.some(agent => agent.id === id)) {
     $terminalAgents.set([...current, { id, label }])
   }
+}
+
+/** Forget a closed terminal agent so it leaves the sidebar. */
+export function unpinTerminalAgent(id: string): void {
+  $terminalAgents.set($terminalAgents.get().filter(agent => agent.id !== id))
 }
 
 /** A page id for one terminal agent's embedded surface, e.g. `terminal:copilot-cli`. */
@@ -32,5 +43,9 @@ export function terminalIdFromPage(page: string): string | null {
 /** Open a catalog coding agent (claude, codex, …): pin it and show its embedded terminal page. */
 export function openTerminalProgram(program: string, label: string): void {
   pinTerminalAgent(program, label)
+
+  const runs = $terminalRuns.get()
+  $terminalRuns.set({ ...runs, [program]: (runs[program] ?? 0) + 1 })
+
   showPage(terminalPageId(program))
 }

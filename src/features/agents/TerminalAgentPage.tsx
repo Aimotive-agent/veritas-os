@@ -1,44 +1,76 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef, useState } from 'react'
+import { IconX } from '@tabler/icons-react'
+import { useEffect, useState } from 'react'
+import { Button } from '../../components/ui/button.tsx'
 import { Spinner } from '../../components/ui/primitives.tsx'
-import { $terminalAgents } from '../../store/terminal.ts'
+import { $terminalAgents, $terminalRuns, unpinTerminalAgent } from '../../store/terminal.ts'
+import { showPage } from '../../store/windows.ts'
 import { TerminalView } from '../terminal/TerminalView.tsx'
 
 /**
  * One terminal coding agent (Copilot, Claude Code, …) embedded in the main window — the same place
  * Hermes and OpenCode live. A real PTY runs the agent's CLI, rendered like any other agent page.
+ * Closing it stops the CLI and removes the agent from the sidebar.
  */
 export function TerminalAgentPage({ agentId, active = true }: { agentId: string; active?: boolean }) {
   const agents = useStore($terminalAgents)
+  const runs = useStore($terminalRuns)
   const agent = agents.find(candidate => candidate.id === agentId) ?? null
   const [handleId, setHandleId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const mounted = useRef(false)
 
+  // (Re)create the PTY whenever the agent is opened; the previous one is disposed on a re-open.
   useEffect(() => {
-    mounted.current = true
+    let cancelled = false
+    let created: string | null = null
 
+    setHandleId(null)
+    setError(null)
     window.heraldOS.terminal
       .create({ cols: 120, rows: 30, program: agentId })
       .then(handle => {
-        if (!mounted.current) {
+        if (cancelled) {
           void window.heraldOS.terminal.dispose(handle.id)
 
           return
         }
 
+        created = handle.id
         setHandleId(handle.id)
-        setError(null)
       })
-      .catch(err => setError(err instanceof Error ? err.message : String(err)))
+      .catch(err => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err))
+        }
+      })
 
     return () => {
-      mounted.current = false
+      cancelled = true
+      if (created) {
+        void window.heraldOS.terminal.dispose(created)
+      }
     }
-  }, [agentId])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentId, runs[agentId]])
+
+  const close = () => {
+    if (handleId) {
+      void window.heraldOS.terminal.dispose(handleId)
+      setHandleId(null)
+    }
+
+    unpinTerminalAgent(agentId)
+    showPage('overview')
+  }
 
   return (
     <div className="flex h-full flex-col">
+      <div className="flex h-10 shrink-0 items-center justify-between border-b border-line px-3">
+        <span className="truncate text-[12.5px] font-medium text-fg-2">{agent?.label ?? agentId}</span>
+        <Button variant="ghost" size="icon-sm" aria-label={`Stop ${agent?.label ?? agentId}`} onClick={close}>
+          <IconX size={15} />
+        </Button>
+      </div>
       <div className="relative min-h-0 flex-1 px-3 pb-3">
         {error ? (
           <div className="flex h-full flex-col items-center justify-center gap-1.5 text-[13px] text-fg-3">
