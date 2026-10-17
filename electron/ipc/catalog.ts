@@ -91,6 +91,27 @@ async function macRemovable(entry: CatalogEntry, searchPath: string, brew: strin
   return false
 }
 
+/**
+ * Linux without the `herald-os` CLI installed (Veritas OS run from source, or the Linux package
+ * removed): read the bundled catalog JSON and detect installed bins directly, so the shell still
+ * lists coding agents and can open them in a terminal. Install/remove still needs the CLI.
+ */
+function linuxLocalCatalog(): CatalogGroupView[] {
+  const searchPath = process.env.PATH ?? ''
+
+  return loadCatalog().map(group => ({
+    id: group.id,
+    label: group.label,
+    description: group.description ?? '',
+    entries: group.entries.map(entry => {
+      const detected = entry.detect?.some(item => fs.existsSync(item.replace(/^~(?=\/)/, os.homedir())))
+      const installed = detected || Boolean(entry.bin?.some(name => which(name, searchPath)))
+
+      return entryView(group, entry, { installed, removable: false, method: null, reason: 'install it from its own site or package manager' })
+    })
+  }))
+}
+
 async function macList(): Promise<CatalogGroupView[]> {
   const searchPath = await macPath()
   const brew = which('brew', searchPath)
@@ -193,11 +214,13 @@ export function registerCatalogIpc(): void {
 
     const result = await run('herald-os', ['catalog', 'list', '--json'], 120_000)
 
-    if (result.code !== 0) {
-      throw new Error(tail(result.stderr) || `herald-os catalog exited ${result.code}`)
+    if (result.code === 0) {
+      return parseCliListing(result.stdout)
     }
 
-    return parseCliListing(result.stdout)
+    // The CLI is missing (or failed): fall back to the bundled catalog so agents still list.
+    log('catalog', `herald-os catalog list failed (${result.code}); using the bundled catalog`)
+    return linuxLocalCatalog()
   })
 
   for (const [channel, action] of [

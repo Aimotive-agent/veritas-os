@@ -8,6 +8,7 @@ import { $sidebar, SIDEBAR_COLLAPSED, SIDEBAR_MAX, SIDEBAR_MIN, SIDEBAR_SNAP, se
 import { $activeSpace, $spaces, addSpace, setActiveSpace } from '../store/spaces.ts'
 import { $page, showPage } from '../store/windows.ts'
 import { $agentPages, agentPageId, bindAgentPages } from '../store/agent-pages.ts'
+import { $terminalAgents, openTerminalProgram } from '../store/terminal.ts'
 import { PAGES } from './apps.ts'
 
 /** The persistent left rail of the main Hermes window: identity, pages, spaces. Resizable; collapses to icons. */
@@ -15,6 +16,7 @@ export function Sidebar() {
   bindAgentPages()
   const page = useStore($page)
   const agentPages = useStore($agentPages)
+  const terminalAgents = useStore($terminalAgents)
   const spaces = useStore($spaces)
   const active = useStore($activeSpace)
   const { width, collapsed } = useStore($sidebar)
@@ -135,6 +137,25 @@ export function Sidebar() {
             </button>
           )
         })}
+
+        {/* Terminal coding agents opened from the catalog, pinned beside the connected agents. */}
+        {terminalAgents.map(agent => (
+          <button
+            key={`terminal:${agent.id}`}
+            type="button"
+            onClick={() => openTerminalProgram(agent.id, agent.label)}
+            aria-label={collapsed ? agent.label : undefined}
+            title={collapsed ? undefined : `${agent.label} — open in the Terminal`}
+            className={cn(
+              'side-item group relative flex h-8 items-center rounded-lg text-[12.5px] transition-colors duration-150',
+              collapsed ? 'w-9 justify-center' : 'gap-2.5 px-2.5',
+              'text-fg-2 hover:bg-white/8 hover:text-fg'
+            )}
+          >
+            <AppGlyph id="terminal" size={16} stroke={1.9} className="text-fg-2 group-hover:text-fg" />
+            {collapsed ? <span className="side-tip">{agent.label}</span> : <span className="truncate">{agent.label}</span>}
+          </button>
+        ))}
 
         {PAGES.filter(def => def.id !== 'overview' && def.id !== 'hermes').map(renderPageButton)}
       </nav>
