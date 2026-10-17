@@ -10,7 +10,12 @@ export interface TerminalAgent {
   label: string
 }
 
-export const $terminalAgents = atom<TerminalAgent[]>([])
+/** Terminal coding agents always pinned in the sidebar — first-class, like OpenCode. */
+const DEFAULT_TERMINAL_AGENTS: readonly TerminalAgent[] = [
+  { id: 'codex', label: 'Codex' }
+]
+
+export const $terminalAgents = atom<TerminalAgent[]>([...DEFAULT_TERMINAL_AGENTS])
 
 /**
  * A per-agent counter that increments each time the agent is (re)opened. The embedded terminal page
