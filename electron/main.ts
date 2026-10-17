@@ -61,6 +61,10 @@ app.setName('Veritas OS')
 // software renderer, rather than to nothing. Machines it accelerates are not affected.
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('enable-unsafe-swiftshader')
+  // Hybrid Intel/NVIDIA Wayland setups can lose the GPU process before the
+  // shell opens, and Electron then aborts from gpu_data_manager_impl_private.
+  // SwiftShader (enabled above) still keeps Canvas WebGL available.
+  app.disableHardwareAcceleration()
 }
 // Widget plugins load from herald-plugin://<id>/, Canvas's verified models from herald-model://<model>/
 // (registered before the app is ready, as Electron requires).
