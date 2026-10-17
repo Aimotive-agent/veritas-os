@@ -22,6 +22,8 @@ export interface CatalogEntry {
   bin?: string[]
   detect?: string[]
   terminal?: boolean
+  /** Extra argv for `bin` when the agent is opened in a terminal (e.g. `["run", "llama3.2:1b"]`). */
+  terminalArgs?: string[]
   terminalApp?: string
   hermes?: 'ollama' | 'lmstudio'
   arch?: string[]
@@ -86,12 +88,22 @@ export function findEntry(groups: CatalogGroup[], id: string): { group: CatalogG
   return null
 }
 
-/** The bin a terminal tab may run for a coding agent, or null when the id is not one. */
-export function terminalBin(groups: CatalogGroup[], id: string): string | null {
-  const found = findEntry(groups, id)
-  const bin = found?.entry.terminal ? found.entry.bin?.[0] : undefined
+/** The command a terminal tab runs for a coding agent, or null when the id is not one. */
+export interface TerminalProgram {
+  bin: string
+  args: string[]
+}
 
-  return bin && BIN_NAME.test(bin) ? bin : null
+export function terminalProgram(groups: CatalogGroup[], id: string): TerminalProgram | null {
+  const found = findEntry(groups, id)
+
+  if (!found?.entry.terminal) {
+    return null
+  }
+
+  const bin = found.entry.bin?.[0]
+
+  return bin && BIN_NAME.test(bin) ? { bin, args: found.entry.terminalArgs ?? [] } : null
 }
 
 export interface MacTools {

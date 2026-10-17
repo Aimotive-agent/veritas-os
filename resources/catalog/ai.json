@@ -49,6 +49,8 @@
       "label": "Ollama",
       "description": "Run open models on this machine. \"Use with Hermes\" points Hermes at it.",
       "bin": ["ollama"],
+      "terminal": true,
+      "terminalArgs": ["run", "llama3.2:1b"],
       "hermes": "ollama",
       "install": [
         { "kind": "script", "ref": "ollama" },
@@ -60,6 +62,9 @@
       "id": "lm-studio",
       "label": "LM Studio",
       "description": "Download and chat with local models; its server is OpenAI-compatible, so Hermes can use it.",
+      "bin": ["lms"],
+      "terminal": true,
+      "terminalArgs": ["chat"],
       "detect": ["~/.lmstudio", "/Applications/LM Studio.app"],
       "hermes": "lmstudio",
       "install": [

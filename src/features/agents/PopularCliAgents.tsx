@@ -1,4 +1,4 @@
-import { IconBrandGithub, IconDownload, IconPlayerPlay, IconTerminal2, IconWorld } from '@tabler/icons-react'
+import { IconBrandGithub, IconDownload, IconPlayerPlay, IconTerminal2 } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 import type { CatalogGroupView } from '../../../../shared/ipc.ts'
 import { GlassButton, GlassCard, Pill, Section } from '../../components/ui/glass.tsx'
@@ -15,9 +15,6 @@ import { UseWithHermes } from './UseWithHermes.tsx'
 
 /** Agents that also expose a local server the shell can drive (id -> our hub agent id). */
 const SERVER_AGENTS: Record<string, string> = { opencode: 'opencode' }
-
-/** Local model apps with a GUI the catalog can launch (catalog id -> .desktop path). */
-const OPEN_APP: Record<string, string> = { 'lm-studio': '/usr/share/applications/ai.elementlabs.lmstudio.desktop' }
 
 export function PopularCliAgents() {
   const [groups, setGroups] = useState<CatalogGroupView[] | null>(null)
@@ -75,11 +72,6 @@ export function PopularCliAgents() {
                   {installed && entry.terminal && bin ? (
                     <GlassButton size="sm" variant="secondary" onClick={() => openTerminalProgram(entry.id, entry.label)}>
                       <IconPlayerPlay /> Open in Terminal
-                    </GlassButton>
-                  ) : null}
-                  {installed && OPEN_APP[entry.id] ? (
-                    <GlassButton size="sm" variant="secondary" onClick={() => void window.heraldOS.apps.launch(OPEN_APP[entry.id])}>
-                      <IconWorld size={14} /> Open
                     </GlassButton>
                   ) : null}
                   {installed && entry.hermes ? <UseWithHermes kind={entry.hermes} label={entry.label} /> : null}

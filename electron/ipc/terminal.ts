@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { IPC, type TerminalCreateOptions, type TerminalHandle } from '../../shared/ipc.ts'
-import { terminalBin } from '../catalog/catalog.ts'
+import { terminalProgram } from '../catalog/catalog.ts'
 import { log } from '../log.ts'
 import { loadCatalog } from './catalog.ts'
 import { normalizeUserPath } from './fs.ts'
@@ -119,15 +119,16 @@ export function registerTerminalIpc(getWindow: () => BrowserWindow | null): void
     const cwd = options.cwd ? normalizeUserPath(options.cwd) : os.homedir()
     const id = `t${nextId++}`
     // A coding agent from the catalog runs first; the tab stays a shell after it exits.
-    const program = options.program ? terminalBin(loadCatalog(), options.program) : null
+    const program = options.program ? terminalProgram(loadCatalog(), options.program) : null
 
     if (options.program && !program) {
       throw new Error(`${options.program} is not a terminal program from the install catalog`)
     }
 
     const home = os.homedir()
-    const resolved = program ? ([path.join(home, '.local', 'bin', program), path.join(home, '.local', 'share', 'mise', 'shims', program)].find(candidate => fs.existsSync(candidate)) ?? program) : null
-    const args = process.platform === 'win32' ? [] : resolved ? ['-l', '-c', `${JSON.stringify(resolved)}; exec ${JSON.stringify(shell)} -l`] : ['-l']
+    const resolved = program ? ([path.join(home, '.local', 'bin', program.bin), path.join(home, '.local', 'share', 'mise', 'shims', program.bin)].find(candidate => fs.existsSync(candidate)) ?? program.bin) : null
+    const command = resolved ? [JSON.stringify(resolved), ...program.args.map(arg => JSON.stringify(arg))].join(' ') : null
+    const args = process.platform === 'win32' ? [] : command ? ['-l', '-c', `${command}; exec ${JSON.stringify(shell)} -l`] : ['-l']
     const child = pty.spawn(shell, args, {
       name: 'xterm-256color',
       cols: Math.max(2, options.cols),
