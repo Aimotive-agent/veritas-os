@@ -1,0 +1,11 @@
+[Unit]
+Description=Herald OS: apply a reset that `herald-os reset` scheduled (erase the account, run setup again)
+ConditionPathExists=/var/lib/herald-os/reset-pending
+Before=herald-os-firstboot.service greetd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/herald-os/reset-helper apply
+
+[Install]
+WantedBy=multi-user.target

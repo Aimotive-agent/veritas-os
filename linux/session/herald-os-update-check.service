@@ -1,0 +1,6 @@
+[Unit]
+Description=Herald OS: check for updates
+
+[Service]
+Type=oneshot
+ExecStart=herald-os-update --check

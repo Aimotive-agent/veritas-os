@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Herald OS: nothing comes in except what sharing nearby needs. -->
+<zone target="default">
+  <short>Herald OS</short>
+  <description>Incoming connections refused, except LocalSend (sending files to nearby devices) and mDNS (finding them).</description>
+  <service name="mdns"/>
+  <service name="dhcpv6-client"/>
+  <port protocol="tcp" port="53317"/>
+  <port protocol="udp" port="53317"/>
+</zone>

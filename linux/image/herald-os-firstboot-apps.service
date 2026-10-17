@@ -1,0 +1,14 @@
+[Unit]
+Description=Herald OS: first-boot apps (the omakase Flatpaks), while the session is already up
+ConditionPathExists=!/var/lib/herald-os/firstboot-apps-done
+Wants=network-online.target
+After=network-online.target herald-os-firstboot.service greetd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/herald-os/firstboot.sh apps
+TimeoutStartSec=2h
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

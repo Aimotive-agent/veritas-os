@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Herald OS
+Comment=Agent-native desktop powered by Hermes Agent
+Exec=herald-os-compositor
+Type=Application
+DesktopNames=HeraldOS

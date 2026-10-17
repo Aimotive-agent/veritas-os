@@ -1,0 +1,6 @@
+# Only the development VM: the shell is built there from the repo (node-pty is compiled locally).
+nodejs
+npm
+gcc-c++
+make
+rsync

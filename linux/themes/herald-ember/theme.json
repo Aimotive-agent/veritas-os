@@ -1,0 +1,50 @@
+{
+  "name": "herald-ember",
+  "label": "Herald Ember",
+  "description": "Warm charcoal with a glowing orange accent.",
+  "shell": {
+    "scheme": "dark"
+  },
+  "wallpaper": "default",
+  "colors": {
+    "bg": "#140c0a",
+    "bg2": "#24130e",
+    "surface": "#2c1812",
+    "fg": "#f6ece6",
+    "fg_dim": "#bba196",
+    "accent": "#ff7a45",
+    "accent_strong": "#ff9466",
+    "border_inactive": "#3d241a",
+    "border_active": "#ff7a45",
+    "urgent": "#ff6b6b",
+    "ok": "#5fd39a",
+    "warn": "#f2c25e"
+  },
+  "gtk": {
+    "color_scheme": "prefer-dark",
+    "theme": "Adwaita-dark"
+  },
+  "terminal": {
+    "background": "#140c0a",
+    "foreground": "#f6ece6",
+    "cursor": "#ff9466",
+    "palette": [
+      "#3d3432",
+      "#dc6a6a",
+      "#6adc90",
+      "#dcc06a",
+      "#6a9adc",
+      "#c96adc",
+      "#6ad3dc",
+      "#dfd6d0",
+      "#6a615e",
+      "#ed9797",
+      "#97edb4",
+      "#edd797",
+      "#97bbed",
+      "#de97ed",
+      "#97e6ed",
+      "#ffffff"
+    ]
+  }
+}

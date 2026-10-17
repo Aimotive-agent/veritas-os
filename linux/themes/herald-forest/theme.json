@@ -1,0 +1,50 @@
+{
+  "name": "herald-forest",
+  "label": "Herald Forest",
+  "description": "Deep green, like a walk under pines.",
+  "shell": {
+    "scheme": "dark"
+  },
+  "wallpaper": "default",
+  "colors": {
+    "bg": "#08130e",
+    "bg2": "#10241a",
+    "surface": "#15291f",
+    "fg": "#e8f3ec",
+    "fg_dim": "#97b5a4",
+    "accent": "#46c58a",
+    "accent_strong": "#64d9a2",
+    "border_inactive": "#1e3b2c",
+    "border_active": "#46c58a",
+    "urgent": "#ff6b6b",
+    "ok": "#5fd39a",
+    "warn": "#f2c25e"
+  },
+  "gtk": {
+    "color_scheme": "prefer-dark",
+    "theme": "Adwaita-dark"
+  },
+  "terminal": {
+    "background": "#08130e",
+    "foreground": "#e8f3ec",
+    "cursor": "#64d9a2",
+    "palette": [
+      "#303b36",
+      "#dc6a6a",
+      "#6adc90",
+      "#dcc06a",
+      "#6a9adc",
+      "#c96adc",
+      "#6ad3dc",
+      "#d2ddd6",
+      "#5d6862",
+      "#ed9797",
+      "#97edb4",
+      "#edd797",
+      "#97bbed",
+      "#de97ed",
+      "#97e6ed",
+      "#ffffff"
+    ]
+  }
+}

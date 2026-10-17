@@ -1,0 +1,15 @@
+{
+  "id": "webapps",
+  "label": "Web apps",
+  "order": 9,
+  "description": "Sites that work best as their own windows.",
+  "entries": [
+    { "id": "basecamp", "label": "Basecamp", "description": "Projects and team chat.", "install": [{ "kind": "webapp", "ref": "https://launchpad.37signals.com", "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/basecamp.png" }] },
+    { "id": "google-photos", "label": "Google Photos", "description": "Your photo library.", "install": [{ "kind": "webapp", "ref": "https://photos.google.com", "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/google-photos.png" }] },
+    { "id": "google-maps", "label": "Google Maps", "description": "Maps and directions.", "install": [{ "kind": "webapp", "ref": "https://maps.google.com", "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/google-maps.png" }] },
+    { "id": "google-contacts", "label": "Google Contacts", "description": "Your contacts.", "install": [{ "kind": "webapp", "ref": "https://contacts.google.com", "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/google-contacts.png" }] },
+    { "id": "zoom", "label": "Zoom", "description": "Meetings in the browser.", "install": [{ "kind": "webapp", "ref": "https://app.zoom.us/wc", "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/zoom.png" }] },
+    { "id": "discord", "label": "Discord", "description": "Communities and voice chat.", "install": [{ "kind": "webapp", "ref": "https://discord.com/app", "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/discord.png" }] },
+    { "id": "grok", "label": "Grok", "description": "xAI's assistant.", "install": [{ "kind": "webapp", "ref": "https://grok.com", "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/grok.png" }] }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "id": "editors",
+  "label": "Editors",
+  "order": 3,
+  "description": "Code editors; Hermes opens projects in whichever you use.",
+  "entries": [
+    { "id": "vscode", "label": "Visual Studio Code", "description": "Microsoft's editor, with its extension marketplace.", "install": [{ "kind": "flatpak", "ref": "com.visualstudio.code" }] },
+    { "id": "zed", "label": "Zed", "description": "A fast, collaborative editor.", "install": [{ "kind": "flatpak", "ref": "dev.zed.Zed" }] },
+    { "id": "sublime-text", "label": "Sublime Text", "description": "A quick, polished editor.", "install": [{ "kind": "flatpak", "ref": "com.sublimetext.three" }] },
+    {
+      "id": "neovim",
+      "label": "Neovim",
+      "description": "The modal editor in the terminal.",
+      "bin": ["nvim"],
+      "install": [
+        { "kind": "dnf", "ref": "neovim" },
+        { "kind": "pacman", "ref": "neovim" }
+      ]
+    },
+    {
+      "id": "helix",
+      "label": "Helix",
+      "description": "A modal editor with language servers built in.",
+      "bin": ["hx", "helix"],
+      "install": [
+        { "kind": "dnf", "ref": "helix" },
+        { "kind": "pacman", "ref": "helix" }
+      ]
+    },
+    { "id": "emacs", "label": "Emacs", "description": "The extensible editor.", "install": [{ "kind": "flatpak", "ref": "org.gnu.emacs" }] }
+  ]
+}

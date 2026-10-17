@@ -1,0 +1,50 @@
+{
+  "name": "herald-rose",
+  "label": "Herald Rose",
+  "description": "Dark plum with a rose-pink accent.",
+  "shell": {
+    "scheme": "dark"
+  },
+  "wallpaper": "default",
+  "colors": {
+    "bg": "#170b10",
+    "bg2": "#27121b",
+    "surface": "#2e1621",
+    "fg": "#fbeef2",
+    "fg_dim": "#c59cab",
+    "accent": "#ff6f9c",
+    "accent_strong": "#ff8fb3",
+    "border_inactive": "#3f1e2c",
+    "border_active": "#ff6f9c",
+    "urgent": "#ff6b6b",
+    "ok": "#5fd39a",
+    "warn": "#f2c25e"
+  },
+  "gtk": {
+    "color_scheme": "prefer-dark",
+    "theme": "Adwaita-dark"
+  },
+  "terminal": {
+    "background": "#170b10",
+    "foreground": "#fbeef2",
+    "cursor": "#ff8fb3",
+    "palette": [
+      "#403439",
+      "#dc6a6a",
+      "#6adc90",
+      "#dcc06a",
+      "#6a9adc",
+      "#c96adc",
+      "#6ad3dc",
+      "#e4d7db",
+      "#6e6166",
+      "#ed9797",
+      "#97edb4",
+      "#edd797",
+      "#97bbed",
+      "#de97ed",
+      "#97e6ed",
+      "#ffffff"
+    ]
+  }
+}

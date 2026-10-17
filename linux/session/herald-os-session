@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# Runs inside the compositor. Publishes the Wayland environment to systemd/D-Bus (so portals and
+# PipeWire find the display), then keeps the Herald OS shell running: a crash restarts it, a clean
+# exit ends the session (greetd starts a fresh one).
+set -u
+
+export ELECTRON_OZONE_PLATFORM_HINT=wayland
+export MOZ_ENABLE_WAYLAND=1
+export QT_QPA_PLATFORM=wayland
+export GDK_BACKEND=wayland,x11
+export HERALD_OS_LINUX_SESSION=1
+# desktop (cage): the shell is one fullscreen kiosk window. panels (niri): menu bar, dock and the
+# Hermes window are separate windows the compositor places; HERALD_OS_KIOSK stays off.
+export HERALD_OS_SHELL_MODE="${HERALD_OS_SHELL_MODE:-desktop}"
+if [[ "$HERALD_OS_SHELL_MODE" == "desktop" ]]; then
+  export HERALD_OS_KIOSK=1
+fi
+LOG_DIR="$HOME/.local/state/herald-os"
+mkdir -p "$LOG_DIR"
+
+# Apps launched through D-Bus activation (gio launch, portals) inherit the systemd/D-Bus activation
+# environment, not ours: publish the Wayland and toolkit variables there too.
+export MOZ_GTK_TITLEBAR_DECORATION=system
+export GTK_CSD=0
+SESSION_VARS=(WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP ELECTRON_OZONE_PLATFORM_HINT MOZ_ENABLE_WAYLAND MOZ_GTK_TITLEBAR_DECORATION GTK_CSD QT_QPA_PLATFORM GDK_BACKEND)
+systemctl --user import-environment "${SESSION_VARS[@]}" 2>/dev/null || true
+dbus-update-activation-environment --systemd "${SESSION_VARS[@]}" 2>/dev/null || true
+systemctl --user start pipewire.socket pipewire-pulse.socket wireplumber.service 2>/dev/null || true
+systemctl --user start xdg-desktop-portal.service 2>/dev/null || true
+
+# System services that belong to the session (panels mode only; cage has no room for them):
+# clipboard history, idle lock and display power, all as transient user units so they die with us.
+if [[ "$HERALD_OS_SHELL_MODE" == "panels" ]]; then
+  start_service() {
+    local unit="$1"
+    shift
+    systemctl --user stop "$unit" 2>/dev/null || true
+    systemd-run --user --quiet --collect --unit="$unit" --setenv=WAYLAND_DISPLAY="$WAYLAND_DISPLAY" --setenv=NIRI_SOCKET="${NIRI_SOCKET:-}" "$@" 2>/dev/null || true
+  }
+  if command -v cliphist >/dev/null && command -v wl-paste >/dev/null; then
+    start_service herald-os-clipboard-text wl-paste --type text --watch cliphist store
+    start_service herald-os-clipboard-image wl-paste --type image --watch cliphist store
+  fi
+  # Omakase web apps are per-user and need the network; install any missing ones once per login.
+  # Offline, every icon would fall back to a generic one for good, so that waits for a later login.
+  if command -v herald-os-omakase >/dev/null && [[ ! -f "$LOG_DIR/omakase-webapps-done" ]]; then
+    (
+      sleep 20
+      case "$(nmcli -t networking connectivity 2>/dev/null)" in none | limited | portal) exit 0 ;; esac
+      herald-os-omakase install --webapps >>"$LOG_DIR/omakase.log" 2>&1 && touch "$LOG_DIR/omakase-webapps-done"
+    ) &
+  fi
+  # Screensaver, lock, screens off and sleep (linux/bin/herald-os-idle reads the timings). "Stay
+  # awake" never outlives a session, so a forgotten switch cannot leave a machine unlocked for good.
+  rm -f "$LOG_DIR/stay-awake"
+  if command -v herald-os-idle >/dev/null; then
+    herald-os-idle start >>"$LOG_DIR/idle.log" 2>&1 || true
+  fi
+fi
+
+# The shell is a source checkout run through its Electron (the dev VM), or a packaged build: the
+# release tarball in /opt/herald-os (Arch) or /usr/share/herald-os/app on the Herald OS image.
+APP="${HERALD_OS_APP:-}"
+if [[ -z "$APP" ]]; then
+  for candidate in "$HOME/Herald-OS/apps/desktop" /opt/herald-os /usr/share/herald-os/app; do
+    if [[ -f "$candidate/dist/electron/main.mjs" || -f "$candidate/resources/app.asar" ]]; then
+      APP="$candidate"
+      break
+    fi
+  done
+  APP="${APP:-$HOME/Herald-OS/apps/desktop}"
+fi
+RUN=()
+if [[ -x "$APP/herald-os" && -f "$APP/resources/app.asar" ]]; then
+  RUN=("$APP/herald-os")
+else
+  # npm workspaces hoist Electron to the repo root; a standalone checkout keeps it under apps/desktop.
+  ELECTRON="${HERALD_OS_ELECTRON:-}"
+  if [[ -z "$ELECTRON" ]]; then
+    for candidate in "$APP/node_modules/.bin/electron" "$APP/../../node_modules/.bin/electron"; do
+      if [[ -x "$candidate" ]]; then
+        ELECTRON="$candidate"
+        break
+      fi
+    done
+  fi
+  if [[ -x "$ELECTRON" && ( -f "$APP/dist/electron/main.mjs" || -n "${HERALD_OS_DEV_SERVER:-}" ) ]]; then
+    RUN=("$ELECTRON" "$APP")
+  fi
+fi
+
+# app-id niri window rules match on; Wayland explicitly (a stray DISPLAY would send Chromium to X11).
+unset DISPLAY
+flags=(--class=herald-os --ozone-platform=wayland)
+if [[ -n "${HERALD_OS_SOFTWARE_GPU:-}" ]]; then
+  flags+=(--disable-gpu)
+fi
+# HiDPI under cage: the output is scale 1, so the shell zooms its page instead (HERALD_OS_ZOOM is
+# read by Electron main; forcing Chromium's device scale factor breaks Wayland buffer sizing).
+# Under niri the output scale in local.kdl handles it and the compositor script unsets the zoom.
+if [[ -n "${HERALD_OS_SCALE:-}" && "$HERALD_OS_SHELL_MODE" == "desktop" ]]; then
+  export HERALD_OS_ZOOM="${HERALD_OS_SCALE}"
+fi
+if [[ -n "${HERALD_OS_NO_SANDBOX:-}" ]]; then
+  flags+=(--no-sandbox)
+fi
+if [[ -n "${HERALD_OS_REMOTE_DEBUG_PORT:-}" ]]; then
+  flags+=("--remote-debugging-port=${HERALD_OS_REMOTE_DEBUG_PORT}")
+fi
+
+if (( ${#RUN[@]} == 0 )); then
+  # Nothing to run yet: show a plain message instead of a black screen and wait for a build.
+  echo "Herald OS shell not built at $APP. Push the repo from the Mac (linux/dev/push.sh)." >&2
+  if command -v foot >/dev/null 2>&1; then
+    exec foot -e bash -c 'echo "Herald OS shell is not built yet. Run linux/dev/push.sh from the Mac."; exec bash'
+  fi
+  sleep 30
+  exit 1
+fi
+
+# The shell's children inherit its DevTools socket, so one still shutting down (the backend, after a
+# restart) would make the next shell's bind fail without a word.
+wait_for_debug_port() {
+  [[ -n "${HERALD_OS_REMOTE_DEBUG_PORT:-}" ]] || return 0
+  local _
+  for _ in $(seq 1 20); do
+    ss -Hltn "sport = :${HERALD_OS_REMOTE_DEBUG_PORT}" 2>/dev/null | grep -q . || return 0
+    sleep 0.5
+  done
+}
+
+failures=0
+window_start=$(date +%s)
+while :; do
+  wait_for_debug_port
+  "${RUN[@]}" "${flags[@]}" >>"$LOG_DIR/shell.log" 2>&1
+  code=$?
+  if [[ $code -eq 0 ]]; then
+    # niri outlives the programs it spawned, so it has to be told to end too; otherwise the session
+    # would sit there without a menu bar or dock instead of greetd starting a fresh one.
+    if [[ "$HERALD_OS_SHELL_MODE" == "panels" ]]; then
+      niri msg action quit --skip-confirmation >/dev/null 2>&1 || true
+    fi
+    exit 0
+  fi
+  now=$(date +%s)
+  if (( now - window_start > 60 )); then
+    failures=0
+    window_start=$now
+  fi
+  failures=$((failures + 1))
+  echo "$(date -Is) shell exited with $code (failure $failures/5)" >>"$LOG_DIR/shell.log"
+  if (( failures >= 5 )); then
+    exit 1
+  fi
+  sleep 1
+done

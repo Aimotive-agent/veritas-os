@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Install the Herald OS omakase software set (linux/omakase/*.txt): Fedora packages as root,
+# Flathub apps and web apps for the session user. Idempotent; safe to re-run after list changes.
+#
+#   herald-os-omakase [install|list] [--packages|--flatpaks|--webapps]
+set -euo pipefail
+
+LISTS="${HERALD_OS_OMAKASE_DIR:-}"
+# The lists that came with this command come first: a checkout's, or the app's when the command is a
+# link into it (/opt/herald-os: the Arch package, the release tarball).
+HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+for candidate in "$LISTS" "$HERE/../omakase" "$HOME/Herald-OS/linux/omakase" /usr/local/share/herald-os-linux/omakase /usr/share/herald-os/omakase /opt/herald-os/resources/herald-os-linux/omakase; do
+  if [[ -n "$candidate" && -d "$candidate" ]]; then
+    LISTS="$candidate"
+    break
+  fi
+done
+[[ -d "$LISTS" ]] || { echo "omakase lists not found" >&2; exit 1; }
+
+strip() { sed -e 's/#.*//' -e '/^\s*$/d' "$1"; }
+
+cmd="${1:-install}"
+shift || true
+only="${1:-}"
+
+packages() {
+  local pkgs manager list
+  # Fedora names in packages.txt, Arch names in packages.pacman.txt; the image bakes its set in.
+  manager="$(herald-os-catalog pkg manager 2>/dev/null || { command -v dnf >/dev/null && echo dnf; } || echo none)"
+  case "$manager" in
+    dnf) list="$LISTS/packages.txt" ;;
+    pacman) list="$LISTS/packages.pacman.txt" ;;
+    *) [[ "$cmd" == "list" ]] || echo "==> packages: none on this system ($manager)"; return 0 ;;
+  esac
+  [[ -f "$list" ]] || return 0
+  mapfile -t pkgs < <(strip "$list")
+  [[ ${#pkgs[@]} -gt 0 ]] || return 0
+  if [[ "$cmd" == "list" ]]; then printf 'package %s\n' "${pkgs[@]}"; return 0; fi
+  echo "==> packages (${#pkgs[@]})"
+  if [[ "$manager" == "dnf" ]]; then
+    # --skip-unavailable keeps one missing package from failing the whole set.
+    sudo -n dnf -y -q install --skip-unavailable --setopt=install_weak_deps=False "${pkgs[@]}" || echo "WARNING: some packages did not install"
+  else
+    sudo -n pacman -S --needed --noconfirm "${pkgs[@]}" || echo "WARNING: some packages did not install"
+  fi
+}
+
+flatpaks() {
+  local ids
+  mapfile -t ids < <(strip "$LISTS/flatpaks.txt")
+  [[ ${#ids[@]} -gt 0 ]] || return 0
+  if [[ "$cmd" == "list" ]]; then printf 'flatpak %s\n' "${ids[@]}"; return 0; fi
+  command -v flatpak >/dev/null || { echo "flatpak missing; skipping"; return 0; }
+  flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+  echo "==> flatpaks (${#ids[@]})"
+  for id in "${ids[@]}"; do
+    if flatpak info --user "$id" >/dev/null 2>&1; then
+      continue
+    fi
+    flatpak install -y --noninteractive --user flathub "$id" || echo "WARNING: $id did not install"
+  done
+}
+
+webapps() {
+  [[ -f "$LISTS/webapps.txt" ]] || return 0
+  if [[ "$cmd" == "list" ]]; then strip "$LISTS/webapps.txt" | sed 's/^/webapp /'; return 0; fi
+  echo "==> web apps"
+  while IFS='|' read -r name url icon; do
+    name="$(echo "$name" | xargs)"; url="$(echo "$url" | xargs)"; icon="$(echo "${icon:-}" | xargs)"
+    [[ -n "$name" && -n "$url" ]] || continue
+    slug="$(echo "$name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-|-$//g')"
+    if [[ -f "$HOME/.local/share/applications/hermes-webapp-$slug.desktop" ]]; then
+      continue
+    fi
+    herald-os install webapp "$name" "$url" ${icon:+"$icon"} >/dev/null || echo "WARNING: web app $name failed"
+  done < <(strip "$LISTS/webapps.txt")
+}
+
+case "$only" in
+  --packages) packages ;;
+  --flatpaks) flatpaks ;;
+  --webapps) webapps ;;
+  "") packages; flatpaks; webapps ;;
+  *) echo "usage: $0 [install|list] [--packages|--flatpaks|--webapps]" >&2; exit 2 ;;
+esac

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Herald OS as an app inside another Wayland compositor (Hyprland, Omarchy): the single-window shell,
+# fullscreen as on macOS, with the compositor's own bar and keys around it. The full Herald OS session
+# (niri, menu bar and dock) starts from the login screen through herald-os-session instead.
+set -u
+
+flags=(--class=herald-os --ozone-platform=wayland)
+
+for app in "${HERALD_OS_APP:-}" /opt/herald-os /usr/share/herald-os/app; do
+  if [[ -n "$app" && -x "$app/herald-os" && -f "$app/resources/app.asar" ]]; then
+    exec "$app/herald-os" "${flags[@]}" "$@"
+  fi
+done
+
+# A source checkout (development): npm workspaces hoist Electron to the repo root.
+repo="${HERALD_OS_REPO:-$HOME/Herald-OS}"
+if [[ -x "$repo/node_modules/.bin/electron" && -f "$repo/apps/desktop/dist/electron/main.mjs" ]]; then
+  exec "$repo/node_modules/.bin/electron" "$repo/apps/desktop" "${flags[@]}" "$@"
+fi
+
+echo "herald-os-app: Herald OS is not installed (no /opt/herald-os); see docs/LINUX.md" >&2
+exit 1

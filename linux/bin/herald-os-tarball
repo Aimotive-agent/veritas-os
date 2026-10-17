@@ -1,0 +1,543 @@
+#!/usr/bin/env python3
+"""Herald OS from the release tarball (herald-os-<version>-linux-<arch>.tar.gz) unpacked in /opt/herald-os:
+the pieces the Arch package lays out, and updates from the project's GitHub releases.
+
+  sudo herald-os-tarball install    the commands and session scripts in /usr/local/bin, Herald OS on the
+                                    login screen (when niri is installed) and in the application menu, the
+                                    update-check user units, chrome-sandbox setuid root; safe to re-run
+  sudo herald-os-tarball remove     take all of that out again (/opt/herald-os itself stays)
+  herald-os-tarball status          the version in /opt/herald-os and what is in place
+  herald-os-tarball check [--channel stable|edge]
+                                    print the version of a newer release and exit 0; exit 1 when up to
+                                    date, 2 when this is not a tarball install, 3 when GitHub cannot be asked
+  sudo herald-os-tarball update [<version>]
+                                    install that release (by default the newest stable one) once its
+                                    .sha256 matches; the version it replaces stays in /opt/herald-os.previous
+  sudo herald-os-tarball rollback   swap /opt/herald-os and /opt/herald-os.previous
+
+A Herald OS in /opt/herald-os that a package installed (herald-os-bin on Arch) is the package's: this
+leaves it alone. HERALD_OS_DESTDIR puts everything under another folder instead of / (a staged install).
+"""
+
+from __future__ import annotations
+
+import ctypes
+import errno
+import hashlib
+import json
+import os
+import platform
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+RELEASES_API = "https://api.github.com/repos/iamlukethedev/Herald-OS/releases?per_page=30"
+SESSION_SCRIPTS = ("herald-os-session", "herald-os-compositor", "herald-os-niri-nested")
+UNITS = ("herald-os-update-check.service", "herald-os-update-check.timer")
+APP_ENTRY = """[Desktop Entry]
+Name=Herald OS
+Comment=The AI-native desktop built around Hermes Agent
+Exec=herald-os-app
+Icon=herald-os
+Type=Application
+Categories=System;Utility;
+StartupWMClass=herald-os
+Terminal=false
+"""
+# A release's .sha256 is sha256sum's line for the file as it is named on the release.
+CHECKSUM_LINE = re.compile(r"^([0-9a-f]{64}) [ *](\S+)$")
+SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
+# Every request goes over HTTPS, redirects included: GitHub sends release files on to its CDN, and
+# a redirect to plain http would let anyone on the way swap the tarball and its checksum together.
+CURL = ("curl", "--proto", "=https", "--proto-redir", "=https", "--fail", "--location", "--retry", "2")
+AT_FDCWD = -100
+RENAME_EXCHANGE = 2
+# What renameat2 answers where the kernel, the C library or the filesystem cannot exchange two paths.
+EXCHANGE_UNSUPPORTED = frozenset({errno.ENOSYS, errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP})
+
+
+class ReleaseError(Exception):
+    """A release that cannot be fetched or trusted, in one line for the person."""
+
+
+def die(message: str, code: int = 1) -> "None":
+    print(f"herald-os-tarball: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+class Layout:
+    """Where a tarball install lives, under `root` (/, or HERALD_OS_DESTDIR)."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.app = root / "opt" / "herald-os"
+        self.previous = root / "opt" / "herald-os.previous"
+        self.linux = self.app / "resources" / "herald-os-linux"
+        self.bin = root / "usr" / "local" / "bin"
+        local_share = root / "usr" / "local" / "share"
+        # Login screens look in /usr/share/wayland-sessions (LightDM only there); on Silverblue and other
+        # ostree systems /usr is read-only, and GDM and SDDM also read /usr/local/share.
+        self.session_entries = [root / "usr" / "share" / "wayland-sessions" / "herald-os.desktop", local_share / "wayland-sessions" / "herald-os.desktop"]
+        self.session_entry = self.session_entries[1 if (root / "run" / "ostree-booted").exists() else 0]
+        self.app_entry = local_share / "applications" / "herald-os.desktop"
+        self.icon = local_share / "icons" / "hicolor" / "512x512" / "apps" / "herald-os.png"
+        self.units = root / "usr" / "local" / "lib" / "systemd" / "user"
+
+
+# ---------------------------------------------------------------------------------------------
+# What is installed.
+def read_version(app: Path) -> str | None:
+    """The version in the app's package.json, inside resources/app.asar."""
+    # An asar archive starts with two pickled sizes (4, then the header's), then the header: a pickled
+    # JSON string (its pickle size, its length, the text). File contents follow the header.
+    resources = app / "resources"
+    try:
+        with (resources / "app.asar").open("rb") as archive:
+            _, header_size, _, text_size = struct.unpack("<4I", archive.read(16))
+            entry = json.loads(archive.read(text_size))["files"]["package.json"]
+            if entry.get("unpacked"):
+                manifest = (resources / "app.asar.unpacked" / "package.json").read_bytes()
+            else:
+                archive.seek(8 + header_size + int(entry["offset"]))
+                manifest = archive.read(int(entry["size"]))
+        version = json.loads(manifest).get("version")
+    except (OSError, ValueError, KeyError, TypeError, struct.error):
+        return None
+    return version if isinstance(version, str) and version else None
+
+
+def owner(path: Path) -> str | None:
+    """The package that owns `path` (pacman, rpm or dpkg), or None when no package does."""
+    for argv in (["pacman", "-Qqo", str(path)], ["rpm", "-qf", "--qf", "%{NAME}\n", str(path)], ["dpkg-query", "-S", str(path)]):
+        if not shutil.which(argv[0]):
+            continue
+        found = subprocess.run(argv, capture_output=True, text=True, check=False)
+        if found.returncode == 0 and found.stdout.strip():
+            name = found.stdout.strip().splitlines()[0]
+            return name.split(":", 1)[0] if argv[0] == "dpkg-query" else name
+    return None
+
+
+def not_a_tarball(layout: Layout) -> str | None:
+    """Why /opt/herald-os is not a release tarball this can manage, or None when it is."""
+    if not (layout.app / "resources" / "app.asar").is_file() or not (layout.linux / "bin").is_dir():
+        return f"there is no Herald OS release tarball unpacked in {layout.app} (docs/LINUX.md)"
+    if layout.app.is_symlink():
+        return f"{layout.app} is a link; update the folder it points to by hand"
+    package = owner(layout.app / "herald-os")
+    if package:
+        return f"Herald OS in {layout.app} comes from the {package} package; update or remove it with the package (on Arch, makepkg -si in packaging/arch/herald-os-bin)"
+    return None
+
+
+def wanted_links(layout: Layout) -> dict[str, Path]:
+    """Name in /usr/local/bin -> what it links to: every command, and the session scripts."""
+    targets = {path.name: path for path in sorted((layout.linux / "bin").iterdir()) if path.is_file()}
+    for name in SESSION_SCRIPTS:
+        targets[name] = layout.linux / "session" / name
+    return targets
+
+
+def points_into(path: Path, folder: Path) -> bool:
+    return path.is_symlink() and os.readlink(path).startswith(f"{folder}/")
+
+
+# ---------------------------------------------------------------------------------------------
+# Installing and removing the system pieces.
+def link(path: Path, target: Path) -> None:
+    staging = path.with_name(f".{path.name}.herald-os-new")
+    staging.unlink(missing_ok=True)
+    staging.symlink_to(target)
+    staging.replace(path)
+
+
+def put(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging = path.with_name(f".{path.name}.herald-os-new")
+    staging.write_bytes(data)
+    staging.chmod(0o644)
+    staging.replace(path)
+
+
+def setuid_sandbox(app: Path) -> None:
+    """Chromium's sandbox helper must be setuid root where unprivileged user namespaces are off."""
+    sandbox = app / "chrome-sandbox"
+    if sandbox.is_file():
+        if os.geteuid() == 0:
+            os.chown(sandbox, 0, 0)
+        sandbox.chmod(0o4755)
+
+
+def install(layout: Layout) -> int:
+    targets = wanted_links(layout)
+    taken = [layout.bin / name for name in targets if (layout.bin / name).is_symlink() or (layout.bin / name).exists()]
+    foreign = [path for path in taken if not points_into(path, layout.app)]
+    if foreign:
+        die("these are not links into " + str(layout.app) + ", so nothing was changed; move them aside and run this again:\n  " + "\n  ".join(map(str, foreign)))
+    layout.bin.mkdir(parents=True, exist_ok=True)
+    for name, target in targets.items():
+        link(layout.bin / name, target)
+    # Commands this version no longer has.
+    for path in layout.bin.glob("herald-os*"):
+        if points_into(path, layout.app) and not path.exists():
+            path.unlink()
+
+    niri = shutil.which("niri")
+    if niri:
+        put(layout.session_entry, (layout.linux / "session" / "herald-os.desktop").read_bytes())
+    else:
+        for entry in layout.session_entries:
+            entry.unlink(missing_ok=True)
+    put(layout.app_entry, APP_ENTRY.encode())
+    icon = layout.app / "resources" / "icons" / "herald-os.png"
+    if icon.is_file():
+        put(layout.icon, icon.read_bytes())
+    for unit in UNITS:
+        put(layout.units / unit, (layout.linux / "session" / unit).read_bytes())
+    setuid_sandbox(layout.app)
+
+    print(f"Herald OS {read_version(layout.app) or '(unknown version)'} is set up from {layout.app}:")
+    print(f"  commands      {len(targets)} links in {layout.bin}")
+    if niri:
+        print(f"  login screen  {layout.session_entry}")
+    else:
+        print("  login screen  not added: the full session needs niri (docs/LINUX.md lists what else it uses);")
+        print("                install it, then run sudo herald-os-tarball install again")
+    print(f"  app menu      {layout.app_entry} (herald-os-app)")
+    print("Next, once for every account that uses it: herald-os setup")
+    return 0
+
+
+def remove(layout: Layout) -> int:
+    gone = [path for path in sorted(layout.bin.glob("herald-os*")) if points_into(path, layout.app)] if layout.bin.is_dir() else []
+    gone += [path for path in (*layout.session_entries, layout.app_entry, layout.icon, *(layout.units / unit for unit in UNITS)) if path.exists()]
+    for path in gone:
+        path.unlink()
+    print(f"Removed {len(gone)} files: the commands in {layout.bin}, the login-screen and application-menu entries, the user units.")
+    print(f"Herald OS itself is still in {layout.app}; `sudo rm -rf {layout.app} {layout.previous}` deletes it.")
+    print("Each account keeps its settings in ~/.config/herald-os and ~/.local/state/herald-os.")
+    return 0
+
+
+def status(layout: Layout) -> int:
+    problem = not_a_tarball(layout)
+    if problem:
+        print(problem)
+        return 2
+    print(f"Herald OS {read_version(layout.app) or '(unknown version)'}, from the release tarball in {layout.app}")
+    targets = wanted_links(layout)
+    linked = sum(points_into(layout.bin / name, layout.app) for name in targets)
+    print(f"  commands      {linked} of {len(targets)} linked in {layout.bin}")
+    entry = next((path for path in layout.session_entries if path.exists()), None)
+    print(f"  login screen  {entry or 'not added (needs niri, then sudo herald-os-tarball install)'}")
+    print(f"  app menu      {layout.app_entry if layout.app_entry.exists() else 'not added'}")
+    if (layout.previous / "resources" / "app.asar").is_file():
+        print(f"  previous      {read_version(layout.previous) or '(unknown version)'} in {layout.previous} (herald-os rollback)")
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------
+# Releases.
+def version_key(version: str) -> tuple | None:
+    """SemVer precedence: a release sorts after its pre-releases, numeric identifiers before words."""
+    match = SEMVER.match(version)
+    if not match:
+        return None
+    major, minor, patch, pre = match.groups()
+    identifiers = tuple((0, int(part), "") if part.isdigit() else (1, 0, part) for part in pre.split(".")) if pre else ()
+    return (int(major), int(minor), int(patch), 0 if pre else 1, identifiers)
+
+
+def is_newer(candidate: str, installed: str | None) -> bool:
+    new = version_key(candidate)
+    old = version_key(installed) if installed else None
+    return new is not None and (old is None or new > old)
+
+
+def machine_arch() -> str | None:
+    """This machine in the release's file names (electron-builder's x64 and arm64)."""
+    return {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(platform.machine().lower())
+
+
+def releases() -> list[dict]:
+    """The repository's published releases, newest first (GitHub's API lists drafts only to the owner)."""
+    found = subprocess.run([*CURL, "-sS", "--max-time", "60", "-H", "Accept: application/vnd.github+json", RELEASES_API], capture_output=True, text=True, check=False)
+    if found.returncode != 0:
+        raise ReleaseError(found.stderr.strip() or f"curl exited with {found.returncode}")
+    try:
+        listing = json.loads(found.stdout)
+    except ValueError as exc:
+        raise ReleaseError(f"GitHub's answer is not JSON ({exc})") from exc
+    if not isinstance(listing, list):
+        raise ReleaseError("GitHub's answer is not a list of releases")
+    return listing
+
+
+def pick_release(listing: list[dict], arch: str, channel: str = "stable", version: str | None = None) -> dict | None:
+    """The release to install: `version` exactly, or the newest with a tarball and checksum for `arch`
+    (pre-releases only on the edge channel)."""
+    best: dict | None = None
+    for release in listing:
+        tag = str(release.get("tag_name") or "")
+        number = tag[1:] if tag.startswith("v") else tag
+        if release.get("draft") or version_key(number) is None:
+            continue
+        if version is not None and number != version:
+            continue
+        if version is None and release.get("prerelease") and channel != "edge":
+            continue
+        name = f"herald-os-{number}-linux-{arch}.tar.gz"
+        assets = {asset.get("name"): asset for asset in release.get("assets") or [] if isinstance(asset, dict)}
+        if name not in assets or f"{name}.sha256" not in assets:
+            continue
+        candidate = {
+            "version": number,
+            "name": name,
+            "url": assets[name].get("browser_download_url", ""),
+            "checksum_url": assets[f"{name}.sha256"].get("browser_download_url", ""),
+            "size": int(assets[name].get("size") or 0),
+        }
+        if best is None or version_key(number) > version_key(best["version"]):
+            best = candidate
+    return best
+
+
+def download(url: str, target: Path) -> None:
+    progress = ["--progress-bar"] if sys.stderr.isatty() else ["-sS"]
+    if not url.startswith("https://") or subprocess.call([*CURL, *progress, "-o", str(target), url]) != 0:
+        raise ReleaseError(f"could not download {url} over HTTPS")
+
+
+def verify(tarball: Path, checksum: Path) -> None:
+    """The tarball is the one the release's .sha256 names, byte for byte."""
+    lines = checksum.read_text(errors="replace").strip().splitlines()
+    match = CHECKSUM_LINE.match(lines[0].strip()) if lines else None
+    if not match or match.group(2) != tarball.name:
+        raise ReleaseError(f"{checksum.name} does not give a checksum for {tarball.name}")
+    digest = hashlib.sha256()
+    with tarball.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    if digest.hexdigest() != match.group(1):
+        raise ReleaseError(f"{tarball.name} does not match its published checksum; nothing was changed")
+
+
+def tree_size(folder: Path) -> int:
+    return sum(path.stat().st_size for path in folder.rglob("*") if path.is_file() and not path.is_symlink()) if folder.is_dir() else 0
+
+
+def exchange(first: Path, second: Path) -> None:
+    """Swap two paths in one step (Linux's renameat2 with RENAME_EXCHANGE), so neither is ever missing.
+    Raises OSError with an errno in EXCHANGE_UNSUPPORTED where this system cannot."""
+    renameat2 = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
+    if renameat2 is None:
+        raise OSError(errno.ENOSYS, "renameat2 is not available")
+    renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    if renameat2(AT_FDCWD, os.fsencode(first), AT_FDCWD, os.fsencode(second), RENAME_EXCHANGE) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), str(first), None, str(second))
+
+
+def swap_by_renames(first: Path, second: Path, parked: Path) -> None:
+    """``exchange`` where it is unsupported: three renames through ``parked``, each undone when a later
+    one fails. ``first`` is missing between the first two."""
+    shutil.rmtree(parked, ignore_errors=True)
+    first.rename(parked)
+    try:
+        second.rename(first)
+    except OSError:
+        parked.rename(first)
+        raise
+    try:
+        parked.rename(second)
+    except OSError:
+        first.rename(second)
+        parked.rename(first)
+        raise
+
+
+def put_in_place(layout: Layout, new: Path) -> Path:
+    """``new`` becomes /opt/herald-os and the version it replaces /opt/herald-os.previous, which must not
+    exist. One exchange where the system allows it, otherwise two renames (the first undone if the
+    second fails). Returns where the replaced version ended up: ``new`` when it could not be moved on."""
+    try:
+        exchange(new, layout.app)
+    except OSError as exc:
+        if exc.errno not in EXCHANGE_UNSUPPORTED:
+            raise
+        layout.app.rename(layout.previous)
+        try:
+            new.rename(layout.app)
+        except OSError:
+            layout.previous.rename(layout.app)
+            raise
+        return layout.previous
+    try:
+        new.rename(layout.previous)
+    except OSError as exc:
+        print(f"  the version it replaced stays in {new} ({exc.strerror}); herald-os rollback looks for it in {layout.previous}")
+        return new
+    return layout.previous
+
+
+def whereabouts(layout: Layout, *others: Path) -> str:
+    """Where each version is now, for the message after a step failed."""
+    found = [(path, read_version(path) or "an unknown version") for path in (layout.app, layout.previous, *others) if (path / "resources" / "app.asar").is_file()]
+    if not found:
+        return f"no Herald OS is left in {layout.app.parent}"
+    text = "Herald OS " + ", ".join(f"{version} is in {path}" for path, version in found)
+    if found[0][0] != layout.app:
+        text += f", and nothing is in {layout.app}: sudo mv {found[0][0]} {layout.app} puts it back"
+    return text
+
+
+def reinstall(layout: Layout) -> int:
+    """The install step of the version now in place (its own commands and entries), or this one's when
+    that version has no herald-os-tarball."""
+    tool = layout.linux / "bin" / "herald-os-tarball"
+    if tool.is_file():
+        return subprocess.call([sys.executable, str(tool), "install"], env={**os.environ, "HERALD_OS_DESTDIR": str(layout.root)})
+    return install(layout)
+
+
+def check(layout: Layout, channel: str) -> int:
+    problem = not_a_tarball(layout)
+    if problem:
+        if (layout.app / "resources" / "app.asar").is_file():
+            print(f"herald-os-tarball: {problem}", file=sys.stderr)
+        return 2
+    arch = machine_arch()
+    if not arch:
+        print(f"herald-os-tarball: Herald OS releases are built for x86_64 and aarch64, not {platform.machine()}", file=sys.stderr)
+        return 3
+    try:
+        release = pick_release(releases(), arch, channel)
+    except ReleaseError as exc:
+        print(f"herald-os-tarball: could not ask GitHub for releases: {exc}", file=sys.stderr)
+        return 3
+    if release and is_newer(release["version"], read_version(layout.app)):
+        print(release["version"])
+        return 0
+    return 1
+
+
+def update(layout: Layout, version: str | None = None) -> int:
+    arch = machine_arch()
+    if not arch:
+        die(f"Herald OS releases are built for x86_64 and aarch64, not {platform.machine()}")
+    try:
+        release = pick_release(releases(), arch, version=version)
+    except ReleaseError as exc:
+        die(f"could not ask GitHub for releases: {exc}")
+    if not release:
+        die(f"no release {'v' + version if version else ''} has a tarball and checksum for {arch}")
+    installed = read_version(layout.app)
+    if version is None and not is_newer(release["version"], installed):
+        print(f"Herald OS {installed} is up to date")
+        return 0
+    print(f"==> Herald OS {release['version']} ({release['name']}), replacing {installed or 'an unknown version'}")
+    # The download and the new version need room beside the version in use; the version before it
+    # (the rollback) goes early only when that room is short.
+    need = max(release["size"], 150 << 20) * 5
+    free = shutil.disk_usage(layout.app.parent).free
+    if free < need:
+        if free + tree_size(layout.previous) < need:
+            die(f"the update needs about {need >> 20} MB free in {layout.app.parent}, and there are {free >> 20} MB")
+        shutil.rmtree(layout.previous, ignore_errors=True)
+    # Unpacked next to /opt/herald-os: the same filesystem, so the swap moves nothing, and the same
+    # SELinux labels as a tarball unpacked there by hand.
+    staging = Path(tempfile.mkdtemp(prefix=".herald-os-update-", dir=layout.app.parent))
+    tarball, checksum, unpacked = staging / release["name"], staging / f"{release['name']}.sha256", staging / "herald-os"
+    replaced: Path | None = None
+    try:
+        download(release["url"], tarball)
+        download(release["checksum_url"], checksum)
+        verify(tarball, checksum)
+        print("  the checksum matches; unpacking")
+        unpacked.mkdir()
+        unpacked.chmod(0o755)
+        if subprocess.call(["tar", "-xzf", str(tarball), "-C", str(unpacked), "--strip-components=1", "--no-same-owner"]) != 0:
+            raise ReleaseError(f"could not unpack {tarball.name}")
+        if read_version(unpacked) != release["version"] or not (unpacked / "herald-os").is_file() or not (unpacked / "resources" / "herald-os-linux" / "bin").is_dir():
+            raise ReleaseError(f"{tarball.name} does not hold Herald OS {release['version']}")
+        setuid_sandbox(unpacked)
+        shutil.rmtree(layout.previous, ignore_errors=True)
+        if layout.previous.exists():
+            raise ReleaseError(f"could not clear {layout.previous} for the version in use")
+        replaced = put_in_place(layout, unpacked)
+    except (ReleaseError, OSError) as exc:
+        die(f"{exc}; {whereabouts(layout)}")
+    finally:
+        if replaced == unpacked:
+            tarball.unlink(missing_ok=True)
+            checksum.unlink(missing_ok=True)
+        else:
+            shutil.rmtree(staging, ignore_errors=True)
+    reinstall(layout)
+    note = " (herald-os rollback goes back)" if replaced == layout.previous else ""
+    print(f"Herald OS {release['version']} is in {layout.app}; {installed or 'the version before'} stays in {replaced}{note}.")
+    print("Log out and back in, or restart herald-os-app, to use it.")
+    return 0
+
+
+def rollback(layout: Layout) -> int:
+    if not (layout.previous / "resources" / "app.asar").is_file():
+        die(f"there is no earlier version in {layout.previous} to go back to")
+    current, previous = read_version(layout.app), read_version(layout.previous)
+    parked = layout.app.with_name(".herald-os.rollback")
+    try:
+        try:
+            exchange(layout.app, layout.previous)
+        except OSError as exc:
+            if exc.errno not in EXCHANGE_UNSUPPORTED:
+                raise
+            swap_by_renames(layout.app, layout.previous, parked)
+    except OSError as exc:
+        die(f"could not swap the versions ({exc.strerror or exc}); {whereabouts(layout, parked)}")
+    reinstall(layout)
+    print(f"Herald OS {previous or '(unknown version)'} is back in {layout.app}; {current or 'the newer one'} is in {layout.previous}.")
+    newer_tool = layout.previous / "resources" / "herald-os-linux" / "bin" / "herald-os-tarball"
+    if not (layout.linux / "bin" / "herald-os-tarball").is_file() and newer_tool.is_file():
+        print(f"That version has no herald-os-tarball: to return, run sudo {newer_tool} rollback")
+    print("Log out and back in, or restart herald-os-app, to use it.")
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+    cmd, args = argv[0], argv[1:]
+    layout = Layout(Path(os.environ.get("HERALD_OS_DESTDIR") or "/"))
+    if cmd == "status":
+        return status(layout)
+    if cmd == "check":
+        channel = args[1] if args[:1] == ["--channel"] and len(args) > 1 else "stable"
+        if channel not in ("stable", "edge") or args not in ([], ["--channel", channel]):
+            die("check [--channel stable|edge]", 2)
+        return check(layout, channel)
+    if cmd not in ("install", "remove", "update", "rollback"):
+        die(f"unknown command {cmd!r} (see herald-os-tarball --help)", 2)
+    if layout.root == Path("/") and os.geteuid() != 0:
+        die(f"{cmd} changes {layout.app} and /usr/local: run it with sudo", 2)
+    problem = not_a_tarball(layout)
+    if problem:
+        die(problem, 2)
+    if cmd == "install":
+        return install(layout)
+    if cmd == "remove":
+        return remove(layout)
+    if cmd == "update":
+        if len(args) > 1 or (args and version_key(args[0]) is None):
+            die("update [<version>], e.g. update 0.1.0-alpha.2", 2)
+        return update(layout, args[0] if args else None)
+    return rollback(layout)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,41 @@
+{
+  "id": "terminals",
+  "label": "Terminals",
+  "order": 4,
+  "description": "Other terminals; Settings > General > Terminal picks the one Super+Return opens.",
+  "entries": [
+    {
+      "id": "ghostty",
+      "label": "Ghostty",
+      "description": "A fast, native terminal with GPU rendering.",
+      "bin": ["ghostty"],
+      "terminalApp": "ghostty",
+      "install": [
+        { "kind": "pacman", "ref": "ghostty" },
+        { "kind": "flatpak", "ref": "com.mitchellh.ghostty" }
+      ]
+    },
+    {
+      "id": "alacritty",
+      "label": "Alacritty",
+      "description": "A minimal terminal configured with a file.",
+      "bin": ["alacritty"],
+      "terminalApp": "alacritty",
+      "install": [
+        { "kind": "dnf", "ref": "alacritty" },
+        { "kind": "pacman", "ref": "alacritty" }
+      ]
+    },
+    {
+      "id": "kitty",
+      "label": "Kitty",
+      "description": "A feature-rich terminal with tabs, splits and images.",
+      "bin": ["kitty"],
+      "terminalApp": "kitty",
+      "install": [
+        { "kind": "dnf", "ref": "kitty" },
+        { "kind": "pacman", "ref": "kitty" }
+      ]
+    }
+  ]
+}

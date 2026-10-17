@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Runs inside cage on machines without hardware GL: starts niri's windowed backend, which cage
+# shows fullscreen. niri then spawns herald-os-session (spawn-at-startup) and manages every window.
+set -u
+
+export HERALD_OS_SHELL_MODE=panels
+unset HERALD_OS_KIOSK HERALD_OS_ZOOM
+# cage's software renderer is the outer layer; niri's own GL goes through Mesa's EGL on Wayland.
+unset WLR_RENDERER
+export LIBGL_ALWAYS_SOFTWARE=1
+
+exec niri --config "$HOME/.config/niri/herald-os.kdl"

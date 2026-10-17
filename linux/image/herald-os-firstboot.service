@@ -1,0 +1,17 @@
+[Unit]
+Description=Herald OS: first-boot setup (the session user, the home folder, Hermes Agent)
+# Once per machine; `herald-os reset` removes the stamp to run it again.
+ConditionPathExists=!/var/lib/herald-os/firstboot-done
+Wants=network-online.target
+After=network-online.target
+Before=greetd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/herald-os/firstboot.sh system
+StandardOutput=journal+console
+TimeoutStartSec=45min
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

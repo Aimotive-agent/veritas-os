@@ -1,0 +1,50 @@
+{
+  "name": "herald-onyx",
+  "label": "Herald Onyx",
+  "description": "True black for OLED screens, with quiet silver highlights.",
+  "shell": {
+    "scheme": "dark"
+  },
+  "wallpaper": "default",
+  "colors": {
+    "bg": "#000000",
+    "bg2": "#0b0b0c",
+    "surface": "#141416",
+    "fg": "#f2f2f3",
+    "fg_dim": "#909096",
+    "accent": "#d9dbe0",
+    "accent_strong": "#ffffff",
+    "border_inactive": "#26262a",
+    "border_active": "#d9dbe0",
+    "urgent": "#ff6b6b",
+    "ok": "#5fd39a",
+    "warn": "#f2c25e"
+  },
+  "gtk": {
+    "color_scheme": "prefer-dark",
+    "theme": "Adwaita-dark"
+  },
+  "terminal": {
+    "background": "#000000",
+    "foreground": "#f2f2f3",
+    "cursor": "#ffffff",
+    "palette": [
+      "#2c2c2c",
+      "#dc6a6a",
+      "#6adc90",
+      "#dcc06a",
+      "#6a9adc",
+      "#c96adc",
+      "#6ad3dc",
+      "#dadadb",
+      "#5c5c5c",
+      "#ed9797",
+      "#97edb4",
+      "#edd797",
+      "#97bbed",
+      "#de97ed",
+      "#97e6ed",
+      "#ffffff"
+    ]
+  }
+}

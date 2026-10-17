@@ -1,0 +1,50 @@
+{
+  "name": "herald-paper",
+  "label": "Herald Paper",
+  "description": "Warm off-white, like good paper, with a terracotta accent.",
+  "shell": {
+    "scheme": "light"
+  },
+  "wallpaper": "default",
+  "colors": {
+    "bg": "#f5f2ea",
+    "bg2": "#ece6d8",
+    "surface": "#fbf9f4",
+    "fg": "#24211b",
+    "fg_dim": "#6b6455",
+    "accent": "#b0532a",
+    "accent_strong": "#94431f",
+    "border_inactive": "#d8cfbd",
+    "border_active": "#b0532a",
+    "urgent": "#c13b3b",
+    "ok": "#1f8a5c",
+    "warn": "#a1660f"
+  },
+  "gtk": {
+    "color_scheme": "default",
+    "theme": "Adwaita"
+  },
+  "terminal": {
+    "background": "#f5f2ea",
+    "foreground": "#24211b",
+    "cursor": "#94431f",
+    "palette": [
+      "#393630",
+      "#a52727",
+      "#27a551",
+      "#a58627",
+      "#275ba5",
+      "#9027a5",
+      "#279ba5",
+      "#c1beb6",
+      "#6d6a63",
+      "#d02525",
+      "#25d05e",
+      "#d0a525",
+      "#256cd0",
+      "#b425d0",
+      "#25c2d0",
+      "#e8e5de"
+    ]
+  }
+}

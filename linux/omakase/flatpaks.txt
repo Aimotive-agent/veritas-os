@@ -1,0 +1,6 @@
+# Herald OS omakase: Flathub apps (user installation). One id per line; # comments.
+md.obsidian.Obsidian
+com.spotify.Client
+org.localsend.localsend_app
+com.visualstudio.code
+org.signal.Signal

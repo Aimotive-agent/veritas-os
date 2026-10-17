@@ -1,0 +1,9 @@
+# Herald OS omakase: web apps, installed as their own windows. Format: Name | URL | icon URL (optional).
+HEY | https://app.hey.com | https://app.hey.com/apple-touch-icon.png
+Google Calendar | https://calendar.google.com | https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/google-calendar.png
+Google Messages | https://messages.google.com/web | https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/google-messages.png
+WhatsApp | https://web.whatsapp.com | https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/whatsapp.png
+X | https://x.com | https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/x.png
+YouTube | https://youtube.com | https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/youtube.png
+ChatGPT | https://chatgpt.com | https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/chatgpt.png
+GitHub | https://github.com | https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/github.png

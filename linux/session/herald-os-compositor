@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Entry point greetd runs as the session user: start the compositor with the Herald OS shell.
+#
+#   HERALD_OS_COMPOSITOR=niri (default)  niri manages every window; the shell runs as panels.
+#   HERALD_OS_COMPOSITOR=cage            Stage 1 kiosk: the shell is the only client.
+set -u
+
+export XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=HeraldOS
+export XDG_SESSION_DESKTOP=herald-os
+
+if ! ls /dev/dri/renderD* >/dev/null 2>&1; then
+  export WLR_RENDERER=pixman
+  export HERALD_OS_SOFTWARE_GPU=1
+fi
+
+# Optional per-machine overrides (compositor choice, output scale, dev server URL, extra flags).
+if [[ -f "$HOME/.config/herald-os/session.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$HOME/.config/herald-os/session.env"
+  set +a
+fi
+# Overrides written before the rename (HERMES_OS_*) still apply; everything below reads HERALD_OS_*.
+for legacy in "${!HERMES_OS_@}"; do
+  current="HERALD_OS_${legacy#HERMES_OS_}"
+  [[ -n "${!current:-}" ]] || export "$current=${!legacy}"
+done
+
+COMPOSITOR="${HERALD_OS_COMPOSITOR:-niri}"
+
+# The compositor's own output is the only record of DRM/GPU/seat problems; keep the last run.
+LOG_DIR="$HOME/.local/state/herald-os"
+mkdir -p "$LOG_DIR"
+exec >>"$LOG_DIR/compositor.log" 2>&1
+echo "$(date -Is) starting $COMPOSITOR (renderer=${WLR_RENDERER:-gpu})"
+
+# Herald's own niri config, rendered at every start from the installed template and the person's
+# keymap (and written only when that changed, as after an update). niri is given it by path, so a
+# personal ~/.config/niri/config.kdl is never read or rewritten. Without it niri would start bare,
+# without Herald OS, so the shell runs under cage instead.
+NIRI_KDL="$HOME/.config/niri/herald-os.kdl"
+if [[ "$COMPOSITOR" != "cage" ]] && command -v niri >/dev/null 2>&1 && ! herald-os keymap apply; then
+  echo "could not render $NIRI_KDL (herald-os keymap apply)"
+fi
+
+if [[ "$COMPOSITOR" == "cage" ]] || ! command -v niri >/dev/null 2>&1 || [[ ! -f "$NIRI_KDL" ]]; then
+  export HERALD_OS_SHELL_MODE=desktop
+  exec cage -s -- "$(command -v herald-os-session)"
+fi
+
+export HERALD_OS_SHELL_MODE=panels
+
+# Machine-specific niri settings live in local.kdl (included last by the managed config).
+# HERALD_OS_SCALE applies to every connected output (and to the "winit" output used when niri is
+# nested, below); the file is only written when it is missing so hand edits survive.
+mkdir -p "$HOME/.config/niri"
+if [[ ! -f "$HOME/.config/niri/local.kdl" ]]; then
+  {
+    echo "// Machine-specific niri overrides. Herald OS never overwrites this file."
+    if [[ -n "${HERALD_OS_SCALE:-}" ]]; then
+      for status in /sys/class/drm/card*-*/status; do
+        [[ "$(cat "$status" 2>/dev/null)" == "connected" ]] || continue
+        name="$(basename "$(dirname "$status")")"
+        name="${name#card*-}"
+        printf 'output "%s" {\n    scale %s\n}\n' "$name" "$HERALD_OS_SCALE"
+      done
+      printf 'output "winit" {\n    scale %s\n}\n' "$HERALD_OS_SCALE"
+    fi
+  } >"$HOME/.config/niri/local.kdl"
+fi
+
+# theme.kdl is included by the managed config; make sure the active theme has written it.
+if [[ ! -f "$HOME/.config/niri/theme.kdl" ]] && command -v herald-os-theme >/dev/null; then
+  herald-os-theme set "$(herald-os-theme current)" >/dev/null 2>&1 || echo "// theme pending" >"$HOME/.config/niri/theme.kdl"
+fi
+[[ -f "$HOME/.config/niri/theme.kdl" ]] || echo "// theme pending" >"$HOME/.config/niri/theme.kdl"
+# The Display panel writes outputs.kdl; the managed config includes it, so it must exist.
+[[ -f "$HOME/.config/niri/outputs.kdl" ]] || echo "// Written by the Herald OS Display panel." >"$HOME/.config/niri/outputs.kdl"
+
+# The shell scales through the compositor under niri; do not also zoom the page.
+unset HERALD_OS_ZOOM
+
+# niri drives displays through DRM and refuses software GL. A VM without 3D acceleration
+# (virtio-gpu reporting `-virgl`, as in QEMU/Apple Virtualization without virgl) therefore gets no
+# output at all. There, nest niri's windowed backend inside cage: cage owns the display with
+# software rendering, niri runs fullscreen inside it and still manages every window.
+# HERALD_OS_NIRI_NESTED=0|1 forces either way.
+nested="${HERALD_OS_NIRI_NESTED:-auto}"
+if [[ "$nested" == "auto" ]]; then
+  nested=0
+  if [[ -n "${WLR_RENDERER:-}" ]]; then
+    nested=1
+  elif journalctl -k -b --no-pager -o cat 2>/dev/null | grep -q 'features:.*-virgl'; then
+    nested=1
+  fi
+fi
+
+if [[ "$nested" == "1" ]]; then
+  echo "no hardware GL: nesting niri (windowed) inside cage"
+  exec cage -s -- "$(command -v herald-os-niri-nested)"
+fi
+
+exec niri --session --config "$NIRI_KDL"

@@ -1,0 +1,50 @@
+{
+  "name": "herald-cloud",
+  "label": "Herald Cloud",
+  "description": "Cool, bright and calm, with a clear blue accent.",
+  "shell": {
+    "scheme": "light"
+  },
+  "wallpaper": "default",
+  "colors": {
+    "bg": "#eef2f8",
+    "bg2": "#e2e8f2",
+    "surface": "#f8fafd",
+    "fg": "#161c28",
+    "fg_dim": "#5a6478",
+    "accent": "#2f6fe0",
+    "accent_strong": "#2459b8",
+    "border_inactive": "#cdd6e4",
+    "border_active": "#2f6fe0",
+    "urgent": "#c13b3b",
+    "ok": "#1f8a5c",
+    "warn": "#a1660f"
+  },
+  "gtk": {
+    "color_scheme": "default",
+    "theme": "Adwaita"
+  },
+  "terminal": {
+    "background": "#eef2f8",
+    "foreground": "#161c28",
+    "cursor": "#2459b8",
+    "palette": [
+      "#2c313d",
+      "#a52727",
+      "#27a551",
+      "#a58627",
+      "#275ba5",
+      "#9027a5",
+      "#279ba5",
+      "#b8bdc4",
+      "#626771",
+      "#d02525",
+      "#25d05e",
+      "#d0a525",
+      "#256cd0",
+      "#b425d0",
+      "#25c2d0",
+      "#e1e5ec"
+    ]
+  }
+}

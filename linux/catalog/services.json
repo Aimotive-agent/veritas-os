@@ -1,0 +1,30 @@
+{
+  "id": "services",
+  "label": "Services",
+  "order": 8,
+  "description": "Passwords, files and private networking.",
+  "entries": [
+    {
+      "id": "1password",
+      "label": "1Password",
+      "description": "The password manager, with its browser and SSH integrations.",
+      "bin": ["1password"],
+      "detect": ["/Applications/1Password.app"],
+      "install": [
+        { "kind": "script", "ref": "onepassword", "arch": ["x86_64"] },
+        { "kind": "aur", "ref": "1password" },
+        { "kind": "brew-cask", "ref": "1password" },
+        { "kind": "link", "ref": "https://1password.com/downloads" }
+      ]
+    },
+    { "id": "bitwarden", "label": "Bitwarden", "description": "An open-source password manager.", "install": [{ "kind": "flatpak", "ref": "com.bitwarden.desktop" }] },
+    { "id": "dropbox", "label": "Dropbox", "description": "Dropbox's sync client.", "arch": ["x86_64"], "install": [{ "kind": "flatpak", "ref": "com.dropbox.Client" }] },
+    {
+      "id": "tailscale",
+      "label": "Tailscale",
+      "description": "A private network between your devices.",
+      "bin": ["tailscale"],
+      "install": [{ "kind": "script", "ref": "tailscale" }]
+    }
+  ]
+}

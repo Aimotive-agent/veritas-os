@@ -1,0 +1,50 @@
+{
+  "name": "herald-lagoon",
+  "label": "Herald Lagoon",
+  "description": "Deep teal water with an aqua accent.",
+  "shell": {
+    "scheme": "dark"
+  },
+  "wallpaper": "default",
+  "colors": {
+    "bg": "#04161a",
+    "bg2": "#072a30",
+    "surface": "#0b2f37",
+    "fg": "#e6f6f7",
+    "fg_dim": "#91bbbf",
+    "accent": "#2fd1c5",
+    "accent_strong": "#58e1d7",
+    "border_inactive": "#13424b",
+    "border_active": "#2fd1c5",
+    "urgent": "#ff6b6b",
+    "ok": "#5fd39a",
+    "warn": "#f2c25e"
+  },
+  "gtk": {
+    "color_scheme": "prefer-dark",
+    "theme": "Adwaita-dark"
+  },
+  "terminal": {
+    "background": "#04161a",
+    "foreground": "#e6f6f7",
+    "cursor": "#58e1d7",
+    "palette": [
+      "#2d3e42",
+      "#dc6a6a",
+      "#6adc90",
+      "#dcc06a",
+      "#6a9adc",
+      "#c96adc",
+      "#6ad3dc",
+      "#cfe0e1",
+      "#5a6b6e",
+      "#ed9797",
+      "#97edb4",
+      "#edd797",
+      "#97bbed",
+      "#de97ed",
+      "#97e6ed",
+      "#ffffff"
+    ]
+  }
+}

@@ -1,0 +1,101 @@
+# Herald OS Linux: the system packages, for the bootc image and the development VM. One per line.
+# Session.
+niri
+cage
+greetd
+seatd
+polkit
+dbus-daemon
+xdg-desktop-portal
+xdg-desktop-portal-gtk
+xdg-desktop-portal-gnome
+xdg-user-dirs
+swaybg
+swaylock
+swayidle
+slurp
+wl-clipboard
+cliphist
+brightnessctl
+playerctl
+wtype
+pipewire
+pipewire-pulse
+wireplumber
+alsa-utils
+# Cloud images ship kernel-core only; the sound drivers (snd-hda-intel for the VM's audio) live here.
+kernel-modules
+NetworkManager
+NetworkManager-wifi
+bluez
+upower
+# Electron runtime libraries and fonts.
+nss
+atk
+at-spi2-atk
+cups-libs
+gtk3
+libdrm
+mesa-libgbm
+mesa-dri-drivers
+alsa-lib
+libxkbcommon
+libXcomposite
+libXdamage
+libXrandr
+libXScrnSaver
+libxshmfence
+pango
+cairo
+google-noto-sans-fonts
+google-noto-emoji-color-fonts
+dejavu-sans-fonts
+liberation-fonts
+# What the CLIs and the shell shell out to.
+python3
+python3-pyyaml
+git
+tar
+xdg-utils
+glib2
+plocate
+fd-find
+librsvg2-tools
+libnotify
+iproute
+procps-ng
+util-linux
+grim
+socat
+curl
+# Herald Canvas converts HEIF and AVIF stills (libheif; HEVC-compressed HEIC photos also need RPM Fusion's
+# libheif-freeworld, which the image does not add) and TIFF, camera RAW and the like (ImageMagick) before opening them.
+libheif-tools
+ImageMagick
+# OCR, Flatpak software, the boot splash.
+tesseract
+tesseract-langpack-eng
+flatpak
+plymouth
+plymouth-scripts
+plymouth-plugin-script
+# The menu bar's quick panels and switches.
+power-profiles-daemon
+pulseaudio-utils
+wlsunset
+# The capture suite.
+wf-recorder
+zbar
+ffmpeg-free
+# Security: the firewall, firmware updates, fingerprint and security-key sign-in.
+firewalld
+fwupd
+fprintd
+fprintd-pam
+pam-u2f
+pamu2fcfg
+# Rescue terminal, and a browser, files and an editor for the Dock and system_open.
+foot
+firefox
+nautilus
+gnome-text-editor

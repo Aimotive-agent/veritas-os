@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# `herald-os reset` on the Herald OS image (as root, through sudo): erase the session user's account
+# and files and run first-boot setup again. The system image is untouched. Two steps, because a
+# logged-in account cannot be deleted from under its own session:
+#
+#   reset-helper schedule <user>   mark the reset and restart
+#   reset-helper apply             on the next boot, before first-boot setup (herald-os-reset.service)
+set -euo pipefail
+
+STATE=/var/lib/herald-os
+PENDING="$STATE/reset-pending"
+
+case "${1:-}" in
+  schedule)
+    user="${2:?schedule needs the user}"
+    id "$user" >/dev/null 2>&1 || { echo "no user $user" >&2; exit 1; }
+    (( "$(id -u "$user")" >= 1000 )) || { echo "refusing to reset a system account" >&2; exit 1; }
+    mkdir -p "$STATE"
+    echo "$user" >"$PENDING"
+    echo "Restarting into setup…"
+    systemctl reboot
+    ;;
+  apply)
+    [[ -f "$PENDING" ]] || exit 0
+    user="$(head -n 1 "$PENDING")"
+    if id "$user" >/dev/null 2>&1 && (( "$(id -u "$user")" >= 1000 )); then
+      loginctl terminate-user "$user" 2>/dev/null || true
+      loginctl disable-linger "$user" 2>/dev/null || true
+      userdel -r "$user" 2>/dev/null || userdel "$user"
+    fi
+    # Flatpaks installed for everyone and saved Wi-Fi networks go too: the machine starts fresh.
+    flatpak uninstall --system --all -y --noninteractive >/dev/null 2>&1 || true
+    rm -f /etc/NetworkManager/system-connections/*.nmconnection
+    rm -f "$STATE/firstboot-done" "$STATE/firstboot-apps-done" "$STATE/hermes-pending" "$PENDING"
+    ;;
+  *) echo "usage: $0 schedule <user> | apply" >&2; exit 2 ;;
+esac

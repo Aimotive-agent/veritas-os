@@ -1,0 +1,15 @@
+# bootc-image-builder: the installer ISO. Without a kickstart of ours it writes one that installs to
+# the first disk it finds, without asking. With ours (bootc-image-builder adds only the line that
+# installs the image), Anaconda's storage screen is the person's: erase a disk, install next to
+# Windows or macOS (dual boot), encrypt it (btrfs, Fedora's default). For an unattended install,
+# boot it with inst.ks=<url> pointing at a kickstart like unattended.ks.
+#
+# xconfig: Anaconda sets multi-user.target unless told otherwise, since greetd provides no
+# service(graphical-login), and the login screen and the session need graphical.target.
+[customizations.installer.kickstart]
+contents = """
+xconfig --startxonboot
+"""
+
+[customizations.installer.modules]
+enable = ["org.fedoraproject.Anaconda.Modules.Localization", "org.fedoraproject.Anaconda.Modules.Timezone"]

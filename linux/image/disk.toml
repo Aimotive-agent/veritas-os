@@ -1,0 +1,5 @@
+# bootc-image-builder: the ready-made VM disk (qcow2). The first boot creates the session user and
+# installs Hermes Agent (herald-os-firstboot.service), so nothing personal is baked in.
+[[customizations.filesystem]]
+mountpoint = "/"
+minsize = "40 GiB"

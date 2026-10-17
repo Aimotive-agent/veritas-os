@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Herald OS
+Description=Herald OS boot splash: the Hermes mark on a deep-blue field with a soft pulse.
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/herald-os
+ScriptFile=/usr/share/plymouth/themes/herald-os/herald-os.script

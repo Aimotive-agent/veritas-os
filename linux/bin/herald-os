@@ -1,0 +1,2942 @@
+#!/usr/bin/env python3
+"""Herald OS command center.
+
+Everything hotkeys and menus do is available here, so people and agents drive the system the same
+way. Shell-facing commands are relayed to the running shell over its control socket; system chores
+call the tools directly.
+
+  Hermes        ask [text] | command | applications | menu | page <id> | open <window> | launch <app>
+  Software      install app <name|flatpak-id> | install webapp <name> <url> [icon-url]
+                remove app <name> | remove webapp <name> | update [--check]
+  Style         theme list | theme set <name> | theme current | theme new <image> [name]
+                theme install <git-url> | font list | font set <family> [--mono] | wallpaper <image>
+                plugin list | plugin add <git-url> | plugin enable|disable|update|remove <id>
+                bar list | bar show|hide <item> | bar move <item> <where> | bar clock 24h [seconds] | bar reset
+                branding set [--logo <image>] [--lock <image>] [--name <text>] | branding reset
+  Trigger       reminder <duration> <message> | reminder list | reminder clear
+                notice time|battery|weather | screenshot | ocr | clipboard | notify <title> [body]
+  Capture       capture screenshot [region|window|screen] | capture record [region] [audio] | capture stop
+                capture region --ask | capture color | capture qr | capture text
+                capture transcode <file> [gif|mp4|webm] | capture share <file>
+  Canvas        canvas open [file] | canvas new [name] [WxH] | canvas status | canvas layers [project] | canvas history
+                canvas text <words> [--x --y --size --font --color --align] | canvas resize <WxH> [--anchor <a>]
+                canvas crop <x> <y> <w> <h> | canvas crop --ratio 4:5 [--angle <deg>] | canvas preview [project]
+                canvas export <file> | canvas undo|redo [--steps <n>] | canvas auto [tone|contrast|color]
+                canvas align <edges> [--layers a,b] [--to canvas|layers|selection] | canvas distribute <mode> --layers a,b,c
+                canvas guides [list|clear] | canvas guides add|remove <axis> <pos> | canvas guides add --margins <m> [--columns <n>]
+                canvas filter <kind> [--amount --radius --threshold --angle --distance --strength] [--layer <l>]
+                canvas mask <layer> reveal|hide|invert|apply|enable|disable|remove|link|unlink|reveal-selection|hide-selection
+                canvas remove-background [layer] [--cutout] | canvas fill <x> <y> <w> <h> [--layer <l>] [--new-layer]
+  Docs          docs open [file] | docs new [name] [--template <t>] [--path <file>] [--content <markdown>|-] | docs list
+                docs read [document] [--part markdown|text|outline|selection] [--heading <h>] | docs find <text>
+                docs write <markdown>|- [--at end|start|selection|marked|after|heading] [--heading <h>] [--mode <m>]
+                docs replace <find> <replacement> [--first] | docs format [--at <what>] [--style <s>] [--bold] [--color <c>]
+                docs table <json-rows> | docs image <file> [--width <px>] | docs insert-range [range] [--workbook <w>]
+                docs save [document] [--to <file>] [--overwrite] | docs pdf [document] [--to <file>] | docs undo|redo [--steps <n>]
+  Sheets        sheets open [file] | sheets new [name] [--template <t>] [--path <file>] | sheets list | sheets read [range]
+                sheets find <text> | sheets write <range> <value...> | sheets write <range> <json-rows>
+                sheets fill <range> [formula] | sheets format <range> <json> | sheets sort <range> --by <column> [--descending]
+                sheets filter <range> --by <column> --values <json> | sheets filter --clear | sheets freeze <rows> [columns]
+                sheets add-sheet [name] | sheets rename-sheet <sheet> <name> | sheets remove-sheet <sheet>
+                sheets replace <find> <replacement> [--first] | sheets clean <range> dedupe|trim|numbers|dates|split|case
+                sheets save [workbook] [--to <file>] [--overwrite] | sheets pdf [workbook] | sheets undo|redo [--steps <n>]
+  Slides        slides open [file] | slides new [name] [--theme <t>] [--slides <json>|-] | slides list | slides read [deck]
+                slides add-slide [title] [--layout <l>] [--body <text>|-] [--notes <text>] | slides notes <slide> <text>|-
+                slides set-slide <slide> [--title <t>] [--body <text>|-] [--layout <l>] [--hidden|--shown] [--background <c>]
+                slides move <slide> <number|first|last> | slides remove <slide> | slides theme <name> | slides replace <find> <with>
+                slides from-doc [document] [--level <n>] [--notes] | slides insert-range [range] [--workbook <w>] [--slide <s>]
+                slides save [deck] [--to <file>] [--overwrite] | slides pdf [deck] [--to <file>] | slides undo|redo [--steps <n>]
+  Crashes       crash list | crash diagnose [pid|name] | crash mute <name> [off]
+  Events        event <name> [key=value ...] | hook list | hook install <event> <script> | hook dir
+  System        lock | suspend | power | wm <niri action...> | state | debug | commands [--json]
+                panel wifi|bluetooth|audio|display|power|clock: the menu bar's quick panels
+                toggle nightlight|dnd|idle|screensaver [on|off] | screensaver | idle show|set ...
+                os <command.id> [json args]: run any Herald OS command (the same ones Hermes uses)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.parse
+from datetime import datetime
+from pathlib import Path
+
+HOME = Path.home()
+RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+SOCKET = RUNTIME / "herald-os" / "control.sock"
+STATE_DIR = HOME / ".local" / "state" / "herald-os"
+CONFIG_DIR = HOME / ".config" / "herald-os"
+APPS_DIR = HOME / ".local" / "share" / "applications"
+ICONS_DIR = HOME / ".local" / "share" / "icons" / "hermes-webapps"
+# The themes that came with this command come first: a checkout's linux/themes, or the app's
+# resources/themes when the command is a link into it (/opt/herald-os: the Arch package, the release
+# tarball). Copies installed elsewhere (the image, the development VM) use the folders after them.
+_SOURCE = Path(__file__).resolve().parent.parent
+THEME_DIRS = [
+    (_SOURCE.parent if _SOURCE.name == "herald-os-linux" else _SOURCE) / "themes",
+    HOME / "Herald-OS" / "linux" / "themes",
+    Path("/usr/local/share/herald-os-linux/themes"),
+    Path("/usr/share/herald-os/themes"),
+    Path("/opt/herald-os/resources/themes"),
+    HOME / ".config" / "herald-os" / "themes",
+]
+
+# name -> help
+COMMANDS: dict[str, str] = {
+    "ask": "Ask Hermes about the focused window, or about the given text",
+    "command": "Open the Hermes command bar",
+    "applications": "Open the application launcher",
+    "menu": "Open the Herald OS control menu; `menu check` reads your own entries in ~/.config/herald-os/menu.json",
+    "page": "Show a Hermes page: overview hermes missions memory files automations connections settings",
+    "open": "Open a Hermes window: terminal system chat-popout",
+    "launch": "Launch an installed application by name or desktop id",
+    "install": "install <catalog-id> (see catalog list) | install app <name|flatpak-id> | install webapp <name> <url> [icon-url]",
+    "remove": "remove <catalog-id> | remove app <name> | remove webapp <name>",
+    "catalog": "catalog list [--json] [--group <id>] | catalog install|remove|status <id>: AI tools, languages, editors, terminals, games, Windows, media, services, web apps",
+    "windows": "windows start|stop|status|connect|remove [--purge]: the Windows VM (herald-os install windows)",
+    "update": "Update Herald OS, Hermes Agent and system packages (--check only reports)",
+    "theme": "theme list | theme set <name> | theme current | theme new <image> [name] | theme install <git-url>",
+    "font": "font list | font set <family> [--mono]: the interface font, or the code and terminal font",
+    "wallpaper": "Set the wallpaper image (path), or `wallpaper default`",
+    "reminder": "reminder <duration> <message> (e.g. 20m, 1h30m) | reminder list | reminder clear",
+    "notice": "notice time | battery | weather",
+    "weather": "weather (now) | weather location [--set <city> | --clear] (default: from your network)",
+    "screenshot": "Screenshot the screen and hand it to Hermes",
+    "capture": "capture region [--ask] | screenshot [region|window|screen] [--edit] | record [region] [audio] | stop | color | qr | text | transcode <file> [gif|mp4|webm] | share <file>",
+    "ocr": "Select a screen region, extract its text (tesseract) to the clipboard",
+    "clipboard": "Clipboard history picker",
+    "notify": "Show a notification: notify <title> [body]",
+    "panel": "Open a menu-bar panel: panel wifi|bluetooth|audio|display|power|clock",
+    "toggle": "toggle nightlight|dnd|idle|screensaver [on|off] (idle on = stay awake)",
+    "screensaver": "Show the screensaver now",
+    "idle": "idle show | idle set lock=<min> screen_off=<min> suspend=<min> (0 = never)",
+    "crash": "crash list | crash diagnose [pid|name] (Hermes explains it) | crash mute <name> [off]",
+    "event": "event <name> [key=value ...]: report an event so hooks and event automations run (login, after-update, …)",
+    "hook": "hook list | hook install <event> <script> | hook dir: scripts that run when something happens",
+    "os": "Run a Herald OS command: os <command.id> [json args], e.g. os page.open '{\"name\": \"missions\"}'",
+    "canvas": "canvas open [file] | new [name] [WxH] | status | layers [project] | history | text <words> [--x …] | resize <WxH> [--anchor …] | crop <x> <y> <w> <h> [--ratio …] [--angle …] | preview [project] | export <file> [--project …] [--overwrite] | undo | redo [--steps <n>] | auto [tone|contrast|color] | align <edges> [--layers …] | distribute <mode> --layers … | guides … | filter <kind> [--amount …] | mask <layer> <action> | remove-background [layer] [--cutout] | fill <x> <y> <w> <h> [--layer …] [--new-layer]: Herald Canvas, the image editor",
+    "docs": "docs open [file] | new [name] [--template …] [--path …] [--content <markdown>|-] | list | read [document] [--part …] [--heading …] | find <text> | write <markdown>|- [--at …] [--heading …] [--mode …] | replace <find> <replacement> [--first] | format [--at …] [--bold] [--style …] [--color …] [--size …] [--align …] | table <json-rows> | image <file> [--width …] | insert-range [range] [--workbook …] | save [document] [--to …] [--overwrite] | pdf [document] [--to …] | undo | redo [--steps <n>]; --document picks the document: Herald Docs, the word processor",
+    "sheets": "sheets open [file] | new [name] [--template …] [--path …] | list | read [range] [--sheet …] | find <text> | write <range> <value…|json-rows> | fill <range> [formula] | format <range> <json> | sort <range> --by <column> [--descending] [--header] | filter <range> --by <column> --values <json> | filter --clear | freeze <rows> [columns] | add-sheet [name] | rename-sheet <sheet> <name> | remove-sheet <sheet> | replace <find> <replacement> [--first] | clean <range> dedupe|trim|numbers|dates|split|case | save [workbook] [--to …] [--overwrite] | pdf [workbook] | undo | redo [--steps <n>]; --workbook picks the workbook: Herald Sheets, the spreadsheet",
+    "slides": "slides open [file] | new [name] [--theme …] [--size …] [--path …] [--slides <json>|-] | list | read [presentation] [--slide …] | add-slide [title] [--layout …] [--body <text>|-] [--notes …] [--after …] | set-slide <slide> [--title …] [--body …] [--layout …] [--hidden|--shown] | notes <slide> <text>|- | move <slide> <to> | remove <slide> | theme <name> | from-doc [document] [--level <n>] [--notes] | insert-range [range] [--workbook …] [--slide …] | replace <find> <replacement> [--first] | save [presentation] [--to …] [--overwrite] | pdf [presentation] | undo | redo [--steps <n>]; --presentation picks the deck: Herald Slides, the presentation editor",
+    "voice": "Talk to Hermes: voice [toggle|start|stop|mute] (default toggle)",
+    "dictate": "Start or finish dictation: what you say is typed into the focused app",
+    "emoji": "Emoji picker; the pick is typed into the focused app",
+    "keymap": "keymap show | keymap herald | keymap omarchy (Super+C, X and V copy, cut and paste everywhere) | keymap apply",
+    "plugin": "plugin list [--json] | add <git-url> | enable|disable|update|remove <id> | dir: widgets for the menu bar, the Overview and their own windows",
+    "bar": "bar [list] | show|hide <item> | move <item> first|last|<n>|before <item>|after <item> | clock [12h|24h|system] [seconds|no-seconds] [date short|long|none] | reset: the menu bar",
+    "branding": "branding [show] | set [--logo <image>] [--lock <image>] [--name <text>] | reset [all|logo|lock|name]: About's logo and name, and the lock-screen picture",
+    "lock": "Lock the session (needs an account password; see `herald-os password`)",
+    "password": "Set the login password the lock screen asks for",
+    "suspend": "Suspend the machine",
+    "power": "Power menu (sleep, restart, shut down, log out)",
+    "webapp-open": "Internal: open a web app window: webapp-open <url> <name>",
+    "update-available": "Internal: tell the menu bar how many updates are pending",
+    "hermes-command": "Internal: how this account runs Hermes Agent, one argument per line, whichever way it was installed (--managed: only ~/.hermes/hermes-agent, which `herald-os update` updates); exits 1 without one",
+    "channel": "Show or set the update channel: channel [stable|edge] (on the image, the image tag it follows)",
+    "rollback": "Go back to the previous version: the Herald OS image's at the next start (it stays in the boot menu), a release tarball's at the next login",
+    "firmware": "firmware [check|update]: device firmware through fwupd (the BIOS, the dock, the SSD)",
+    "reset": "reset: erase this computer's account, apps and files and start setup again (asks to confirm)",
+    "omakase": "Install the curated software set (omakase install | omakase list)",
+    "wm": "A window-manager action: wm <niri action> [args] (on Hyprland the same names, or a dispatcher)",
+    "omarchy": "omarchy install | remove | status: run Herald OS inside Omarchy (theme hook, menu entry, keys)",
+    "setup": "setup [--yes]: once per user after installing (Hermes Agent and the bridge plugin) | setup --undo: take back its changes to Hermes | setup fingerprint | setup fido2",
+    "state": "Dump the shell's window-manager state",
+    "debug": "Print diagnostics for bug reports",
+    "commands": "List commands",
+}
+
+OVERLAY = {"ask", "command", "applications", "menu", "power", "clipboard", "emoji"}
+
+
+# ---------------------------------------------------------------------------------------------
+def die(message: str, code: int = 1) -> "None":
+    print(f"herald-os: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+def sh(argv: list[str], *, timeout: float = 60, check: bool = False, input_: str | None = None, capture: bool = True) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(argv, capture_output=capture, text=True, timeout=timeout, check=check, input=input_)
+    except FileNotFoundError:
+        die(f"{argv[0]} is not installed", 127)
+    except subprocess.TimeoutExpired:
+        die(f"{argv[0]} timed out after {timeout:.0f}s", 124)
+    return subprocess.CompletedProcess(argv, 1)  # unreachable, keeps type checkers calm
+
+
+def relay(cmd: str, args: list[str], extra: dict | None = None, *, quiet: bool = False, timeout: float = 15) -> dict:
+    """Send one JSON line to the shell and return its JSON reply."""
+    if not SOCKET.exists():
+        if quiet:
+            return {"ok": False, "error": "shell not running"}
+        die(f"the Herald OS shell is not running (no {SOCKET})", 3)
+    payload = {"cmd": cmd, "args": args, **(extra or {})}
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect(str(SOCKET))
+            s.sendall((json.dumps(payload) + "\n").encode())
+            buf = b""
+            while not buf.endswith(b"\n"):
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+    except OSError as exc:
+        if quiet:
+            return {"ok": False, "error": str(exc)}
+        die(f"cannot talk to the shell: {exc}", 3)
+    try:
+        return json.loads(buf.decode() or "{}")
+    except json.JSONDecodeError:
+        return {"ok": False, "error": f"bad reply: {buf[:200]!r}"}
+
+
+def notify(title: str, body: str = "") -> None:
+    """Notification through the shell; falls back to notify-send when the shell is down."""
+    reply = relay("notify", [title, body], quiet=True)
+    if not reply.get("ok") and shutil.which("notify-send"):
+        subprocess.run(["notify-send", title, body], check=False)
+
+
+def niri(*action: str) -> int:
+    if not shutil.which("niri"):
+        die("niri is not installed", 2)
+    return subprocess.call(["niri", "msg", "action", *action])
+
+
+def compositor() -> str | None:
+    """The compositor this session runs under, from the socket each one advertises."""
+    if os.environ.get("NIRI_SOCKET"):
+        return "niri"
+    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        return "hyprland"
+    return None
+
+
+# The niri actions Herald's own binds and docs use, as Hyprland dispatchers.
+HYPR_ACTIONS = {
+    "close-window": ["killactive"],
+    "fullscreen-window": ["fullscreen", "0"],
+    "maximize-column": ["fullscreen", "1"],
+    "toggle-window-floating": ["togglefloating"],
+    "focus-column-left": ["movefocus", "l"],
+    "focus-column-right": ["movefocus", "r"],
+    "focus-window-up": ["movefocus", "u"],
+    "focus-window-down": ["movefocus", "d"],
+    "close-focused-window": ["killactive"],
+}
+
+# The same, for a Lua config (Hyprland 0.55+, Omarchy 4), which takes only Lua dispatchers.
+HYPR_LUA = {
+    "close-window": "hl.dsp.window.close()",
+    "fullscreen-window": 'hl.dsp.window.fullscreen({ mode = "fullscreen" })',
+    "maximize-column": 'hl.dsp.window.fullscreen({ mode = "maximized" })',
+    "toggle-window-floating": 'hl.dsp.window.float({ action = "toggle" })',
+    "focus-column-left": 'hl.dsp.focus({ direction = "l" })',
+    "focus-column-right": 'hl.dsp.focus({ direction = "r" })',
+    "focus-window-up": 'hl.dsp.focus({ direction = "u" })',
+    "focus-window-down": 'hl.dsp.focus({ direction = "d" })',
+    "close-focused-window": "hl.dsp.window.close()",
+}
+
+
+def lua_string(text: str) -> str:
+    """A Lua string literal (pure; tested)."""
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return '"' + re.sub(r"[\x00-\x1f]", "", escaped) + '"'
+
+
+def hypr_dispatches(name: str, rest: list[str]) -> tuple[str | None, list[str]]:
+    """The Lua and the classic dispatcher for a `wm` action (pure; tested)."""
+    if name in ("focus-workspace", "workspace") and rest:
+        ref = rest[0] if rest[0].lstrip("+-").isdigit() or name == "workspace" else f"name:{rest[0]}"
+        return f"hl.dsp.focus({{ workspace = {lua_string(ref)} }})", ["workspace", ref]
+    if name == "exec" and rest:
+        return f"hl.dsp.exec_cmd({lua_string(' '.join(rest))})", ["exec", *rest]
+    if name in HYPR_ACTIONS:
+        return HYPR_LUA[name], HYPR_ACTIONS[name]
+    # Anything else goes as given: a classic dispatcher, or a Lua one (`hl.dsp.…`).
+    raw = [name, *rest]
+    return (" ".join(raw) if name.startswith("hl.") else None), raw
+
+
+def wm(*action: str) -> int:
+    """`herald-os wm <action>`: niri actions on niri; on Hyprland, the same names mapped to dispatchers
+    (or a raw dispatcher, e.g. `wm workspace 3`)."""
+    if compositor() == "hyprland":
+        if not shutil.which("hyprctl"):
+            die("hyprctl is not installed", 2)
+        lua, classic = hypr_dispatches(action[0], list(action[1:]))
+        # Lua first: under hyprland.conf it is an unknown dispatcher, so nothing happens twice.
+        first = ""
+        for args in ([[lua]] if lua else []) + [classic]:
+            done = subprocess.run(["hyprctl", "dispatch", *args], capture_output=True, text=True)
+            if done.returncode == 0 and done.stdout.strip() == "ok":
+                return 0
+            first = first or (done.stdout.strip() or done.stderr.strip())
+        print(first or "hyprctl failed", file=sys.stderr)
+        return 1
+    return niri(*action)
+
+
+def slugify(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "webapp"
+
+
+# ---------------------------------------------------------------------------------------------
+# Software.
+def looks_like_flatpak_id(name: str) -> bool:
+    return name.count(".") >= 2 and " " not in name
+
+
+def flatpak_ready() -> bool:
+    if not shutil.which("flatpak"):
+        return False
+    remotes = sh(["flatpak", "remotes", "--columns=name"], timeout=20).stdout.split()
+    if "flathub" not in remotes:
+        sh(["flatpak", "remote-add", "--user", "--if-not-exists", "flathub", "https://dl.flathub.org/repo/flathub.flatpakrepo"], timeout=120)
+    return True
+
+
+def flatpak_search(name: str) -> list[tuple[str, str]]:
+    """Flathub matches for a human name, as (app id, name) pairs."""
+    if not flatpak_ready():
+        return []
+    result = sh(["flatpak", "search", "--columns=application,name", name], timeout=120)
+    rows = [line.split("\t") for line in result.stdout.splitlines() if "\t" in line]
+    return [(row[0].strip(), row[1].strip()) for row in rows]
+
+
+def flatpak_resolve(name: str) -> str:
+    """The Flathub app id a name clearly means: an exact name match or the only result. A loose search
+    also returns themes and plugins ("obsidian" lists GTK themes first), so anything else is refused
+    with the candidates, for the caller to pick one by id."""
+    if looks_like_flatpak_id(name):
+        return name
+    matches = flatpak_search(name)
+    exact = [app_id for app_id, app_name in matches if app_name.lower() == name.lower()]
+    if exact:
+        return exact[0]
+    if len(matches) == 1:
+        return matches[0][0]
+    if not matches:
+        die(f"no package or Flatpak found for {name!r}", 1)
+    options = ", ".join(f"{app_name} ({app_id})" for app_id, app_name in matches[:5])
+    die(f"{name!r} matches several Flatpaks; install one by id: {options}", 1)
+
+
+def pkg(*args: str, quiet: bool = False) -> int:
+    """The system package layer (dnf, pacman, or none on the image) in herald-os-catalog."""
+    tool = shutil.which("herald-os-catalog") or str(Path(__file__).resolve().with_name("herald-os-catalog"))
+    if not Path(tool).exists():
+        return 127
+    return subprocess.call([sys.executable, tool, "pkg", *args], stdout=subprocess.DEVNULL if quiet else None, stderr=subprocess.DEVNULL if quiet else None)
+
+
+def install_app(name: str) -> int:
+    if not name:
+        die("install app needs a name", 2)
+    if not looks_like_flatpak_id(name) and pkg("available", name, quiet=True) == 0:
+        print(f"==> system package {name}")
+        code = pkg("install", name)
+        notify("Installed" if code == 0 else "Install failed", name)
+        return code
+    app_id = flatpak_resolve(name)
+    print(f"==> flatpak install {app_id}")
+    code = subprocess.call(["flatpak", "install", "-y", "--noninteractive", "--user", "flathub", app_id])
+    notify("Installed" if code == 0 else "Install failed", app_id)
+    return code
+
+
+def remove_app(name: str) -> int:
+    if not name:
+        die("remove app needs a name", 2)
+    if not looks_like_flatpak_id(name) and pkg("has", name, quiet=True) == 0:
+        code = pkg("remove", name)
+    else:
+        app_id = name if looks_like_flatpak_id(name) else None
+        if app_id is None and shutil.which("flatpak"):
+            for line in sh(["flatpak", "list", "--app", "--columns=application,name"], timeout=60).stdout.splitlines():
+                parts = line.split("\t")
+                if len(parts) == 2 and parts[1].strip().lower() == name.lower():
+                    app_id = parts[0].strip()
+        if not app_id:
+            die(f"{name!r} is not an installed package or Flatpak", 1)
+        code = subprocess.call(["flatpak", "uninstall", "-y", "--noninteractive", app_id])
+    notify("Removed" if code == 0 else "Remove failed", name)
+    return code
+
+
+def install_webapp(name: str, url: str, icon_url: str | None = None) -> int:
+    if not name or not url.startswith(("http://", "https://")):
+        die("install webapp needs a name and an http(s) url", 2)
+    slug = slugify(name)
+    APPS_DIR.mkdir(parents=True, exist_ok=True)
+    ICONS_DIR.mkdir(parents=True, exist_ok=True)
+    icon_path = ICONS_DIR / f"{slug}.png"
+    host = urllib.parse.urlparse(url).netloc
+    for candidate in filter(None, [icon_url, f"https://www.google.com/s2/favicons?domain={host}&sz=256"]):
+        if sh(["curl", "-fsSL", "--max-time", "20", "-o", str(icon_path), candidate], timeout=30).returncode == 0 and icon_path.stat().st_size > 0:
+            break
+    else:
+        icon_path = Path("web-browser")
+    desktop = APPS_DIR / f"hermes-webapp-{slug}.desktop"
+    desktop.write_text(
+        "[Desktop Entry]\n"
+        f"Name={name}\n"
+        f"Comment=Herald OS web app for {host}\n"
+        f"Exec=herald-os webapp-open {shell_quote(url)} {shell_quote(name)}\n"
+        f"Icon={icon_path}\n"
+        "Type=Application\n"
+        "Categories=Network;WebApp;\n"
+        f"StartupWMClass=hermes-webapp-{slug}\n"
+        "Terminal=false\n"
+    )
+    if shutil.which("update-desktop-database"):
+        subprocess.run(["update-desktop-database", str(APPS_DIR)], check=False, capture_output=True)
+    notify("Web app added", f"{name} is in Applications")
+    print(str(desktop))
+    return 0
+
+
+def shell_quote(value: str) -> str:
+    return '"' + value.replace('"', '\\"') + '"'
+
+
+def remove_webapp(name: str) -> int:
+    slug = slugify(name)
+    removed = False
+    for path in (APPS_DIR / f"hermes-webapp-{slug}.desktop", ICONS_DIR / f"{slug}.png"):
+        if path.exists():
+            path.unlink()
+            removed = True
+    if not removed:
+        die(f"no web app named {name!r}", 1)
+    notify("Web app removed", name)
+    return 0
+
+
+def catalog(args: list[str]) -> int:
+    """The install catalog lives in herald-os-catalog (linux/catalog/*.json)."""
+    tool = shutil.which("herald-os-catalog") or str(Path(__file__).resolve().with_name("herald-os-catalog"))
+    if not Path(tool).exists():
+        die("herald-os-catalog is not installed", 127)
+    return subprocess.call([sys.executable, tool, *args])
+
+
+def webapp_open(url: str, name: str) -> int:
+    reply = relay("webapp", [url, name, slugify(name)])
+    if not reply.get("ok"):
+        # Shell not running: fall back to the browser.
+        return subprocess.call(["xdg-open", url])
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------
+# Style. The theme engine itself lives in Phase 3; this is its stable CLI.
+def theme_dirs() -> list[Path]:
+    return [d for d in THEME_DIRS if d.is_dir()]
+
+
+def theme_list() -> int:
+    seen: set[str] = set()
+    for base in theme_dirs():
+        for entry in sorted(base.iterdir()):
+            if entry.is_dir() and (entry / "theme.json").exists() and entry.name not in seen:
+                seen.add(entry.name)
+                print(entry.name)
+    if not seen:
+        print("herald-ocean")
+    return 0
+
+
+def theme_current() -> int:
+    marker = CONFIG_DIR / "theme"
+    print(marker.read_text().strip() if marker.exists() else "herald-ocean")
+    return 0
+
+
+def theme_set(name: str) -> int:
+    if not name:
+        die("theme set needs a name", 2)
+    applier = shutil.which("herald-os-theme")
+    if applier:
+        return subprocess.call([applier, "set", name])
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    (CONFIG_DIR / "theme").write_text(name + "\n")
+    relay("theme", [name], quiet=True)
+    return 0
+
+
+THEME_COLOR_KEYS = ("bg", "bg2", "surface", "fg", "fg_dim", "accent", "accent_strong", "border_active", "border_inactive", "urgent", "ok", "warn")
+HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+THEME_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".avif"}
+MAX_THEME_IMAGE = 25 * 1024 * 1024
+
+
+def theme_problem(spec: object) -> str | None:
+    if not isinstance(spec, dict):
+        return "theme.json must be a JSON object"
+    if not THEME_NAME.match(str(spec.get("name") or "")):
+        return 'theme.json needs a "name" of lowercase letters, digits and dashes'
+    colors = spec.get("colors")
+    if not isinstance(colors, dict):
+        return 'theme.json needs "colors"'
+    bad = [key for key in THEME_COLOR_KEYS if not HEX_COLOR.match(str(colors.get(key) or ""))]
+    return f"theme.json colours must be #rrggbb; check {', '.join(bad)}" if bad else None
+
+
+def theme_install(url: str) -> int:
+    """Install the themes in a git repository, keeping only colours and images: a theme cannot run code."""
+    if not re.match(r"^https://[\w.-]+/[\w./-]+$", url):
+        die("theme install needs the https address of a git repository", 2)
+    if not shutil.which("git"):
+        die("git is not installed", 127)
+    user_dir = CONFIG_DIR / "themes"
+    builtin_dirs = [d for d in THEME_DIRS if d != user_dir]
+    installed: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="herald-theme-") as scratch:
+        result = sh(["git", "clone", "--depth", "1", "--quiet", url, scratch], timeout=180)
+        if result.returncode != 0:
+            die(result.stderr.strip() or "git clone failed", 1)
+        root = Path(scratch)
+        folders = [root] if (root / "theme.json").exists() else [d for d in sorted(root.iterdir()) if d.is_dir() and not d.name.startswith(".") and (d / "theme.json").exists()]
+        if not folders:
+            die("the repository has no theme.json", 1)
+        for folder in folders:
+            try:
+                spec = json.loads((folder / "theme.json").read_text())
+            except json.JSONDecodeError as exc:
+                die(f"{folder.name}: theme.json is not valid JSON ({exc})", 1)
+            problem = theme_problem(spec)
+            if problem:
+                die(f"{folder.name}: {problem}", 1)
+            name = spec["name"]
+            if any((base / name / "theme.json").exists() for base in builtin_dirs):
+                die(f"{name!r} is a built-in theme name", 1)
+            target = user_dir / name
+            shutil.rmtree(target, ignore_errors=True)
+            target.mkdir(parents=True)
+            for entry in folder.iterdir():
+                if entry.is_file() and not entry.is_symlink() and entry.suffix.lower() in IMAGE_EXTENSIONS and entry.stat().st_size <= MAX_THEME_IMAGE:
+                    shutil.copy2(entry, target / entry.name)
+            wallpaper_name = Path(str(spec.get("wallpaper") or "default")).name
+            clean = {key: spec[key] for key in ("name", "label", "description", "colors", "gtk", "terminal") if key in spec}
+            clean["wallpaper"] = wallpaper_name if (target / wallpaper_name).is_file() else "default"
+            scheme = (spec.get("shell") or {}).get("scheme") if isinstance(spec.get("shell"), dict) else None
+            if scheme in ("dark", "light"):
+                clean["shell"] = {"scheme": scheme}
+            (target / "theme.json").write_text(json.dumps(clean, indent=2) + "\n")
+            installed.append(name)
+    notify("Themes installed", ", ".join(installed))
+    print("\n".join(installed))
+    return 0
+
+
+def font(args: list[str]) -> int:
+    sub = args[0] if args else "list"
+    if sub == "list":
+        if not shutil.which("fc-list"):
+            die("fc-list is not installed (fontconfig)", 127)
+        families = sorted({line.split(",")[0].strip() for line in sh(["fc-list", ":", "family"], timeout=30).stdout.splitlines() if line.strip()})
+        print("\n".join(families))
+        return 0
+    if sub == "set":
+        mono = "--mono" in args
+        family = " ".join(a for a in args[1:] if a != "--mono").strip()
+        if not family:
+            die("font set <family> [--mono]  (default puts the built-in font back)", 2)
+        reset = family.lower() in ("default", "reset", "system")
+        if mono:
+            # The foot rescue terminal follows the code font; the theme engine reads this file.
+            marker = CONFIG_DIR / "font-mono"
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            if reset:
+                marker.unlink(missing_ok=True)
+            else:
+                marker.write_text(family + "\n")
+            if shutil.which("herald-os-theme"):
+                subprocess.run(["herald-os-theme", "set", theme_name_current()], check=False, capture_output=True)
+        return run_os("font.set", {"family": family, "kind": "mono" if mono else "ui"})
+    die("font list | font set <family> [--mono]", 2)
+    return 2
+
+
+def theme_name_current() -> str:
+    marker = CONFIG_DIR / "theme"
+    return marker.read_text().strip() if marker.exists() else "herald-ocean"
+
+
+def wallpaper(path: str) -> int:
+    value = "" if path in ("default", "") else str(Path(path).expanduser().resolve())
+    if value and not Path(value).is_file():
+        die(f"no such image: {path}", 1)
+    reply = relay("wallpaper", [value])
+    return 0 if reply.get("ok") else 1
+
+
+# ---------------------------------------------------------------------------------------------
+# Trigger.
+DURATION_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
+
+
+def parse_duration(text: str) -> int:
+    if text.isdigit():
+        return int(text) * 60
+    match = DURATION_RE.match(text)
+    if not match or not any(match.groups()):
+        die(f"bad duration {text!r} (use 20m, 1h30m, 90s or plain minutes)", 2)
+    h, m, s = (int(x) if x else 0 for x in match.groups())
+    return h * 3600 + m * 60 + s
+
+
+def reminder(args: list[str]) -> int:
+    if not args or args[0] == "list":
+        result = sh(["systemctl", "--user", "list-timers", "--all", "--no-pager", "--output=json", "hermes-reminder-*"], timeout=15)
+        try:
+            timers = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError:
+            timers = []
+        if not timers:
+            print("No reminders set.")
+            return 0
+        for timer in sorted(timers, key=lambda t: t.get("next") or 0):
+            desc = sh(["systemctl", "--user", "show", "-p", "Description", "--value", timer["unit"]], timeout=10).stdout.strip()
+            when = datetime.fromtimestamp(timer["next"] / 1_000_000).strftime("%a %H:%M") if timer.get("next") else "now"
+            print(f"{when:<9} {desc.removeprefix('Reminder: ')}")
+        return 0
+    if args[0] == "clear":
+        result = sh(["systemctl", "--user", "list-units", "--all", "--no-legend", "--no-pager", "hermes-reminder-*"], timeout=15)
+        units = [tok for line in result.stdout.splitlines() for tok in line.split() if tok.startswith("hermes-reminder-")]
+        for unit in units:
+            subprocess.run(["systemctl", "--user", "stop", unit], check=False, capture_output=True)
+        notify("Reminders cleared", f"{len(units)} cancelled" if units else "None were set")
+        return 0
+    if len(args) < 2:
+        die("reminder <duration> <message>", 2)
+    seconds = parse_duration(args[0])
+    message = " ".join(args[1:])
+    unit = f"hermes-reminder-{time.time_ns()}"
+    result = sh([
+        "systemd-run", "--user", "--quiet", f"--on-active={seconds}", f"--unit={unit}",
+        f"--description=Reminder: {message}", "--timer-property=AccuracySec=1s",
+        "herald-os", "notify", "Reminder", message,
+    ], timeout=15)
+    if result.returncode != 0:
+        die(result.stderr.strip() or "systemd-run failed", 1)
+    when = datetime.fromtimestamp(time.time() + seconds).strftime("%H:%M")
+    notify("Reminder set", f"{message} at {when}")
+    print(f"{unit} fires at {when}")
+    return 0
+
+
+def notice(kind: str) -> int:
+    if kind == "time":
+        now = datetime.now()
+        notify(now.strftime("%A, %-d %B"), now.strftime("%H:%M"))
+    elif kind == "battery":
+        bats = sorted(Path("/sys/class/power_supply").glob("BAT*"))
+        if not bats:
+            notify("Battery", "No battery in this machine")
+        else:
+            cap = (bats[0] / "capacity").read_text().strip()
+            status = (bats[0] / "status").read_text().strip()
+            notify(f"Battery {cap}%", status)
+    elif kind == "weather":
+        result = sh(["curl", "-fsS", "--max-time", "8", weather_url(weather_location())], timeout=12)
+        notify("Weather", result.stdout.strip() if result.returncode == 0 else "Weather is unavailable right now")
+    else:
+        die("notice time|battery|weather", 2)
+    return 0
+
+
+WEATHER_FILE = CONFIG_DIR / "weather-location"
+
+
+def weather_location() -> str:
+    try:
+        return WEATHER_FILE.read_text().strip()
+    except OSError:
+        return ""
+
+
+def weather_url(location: str) -> str:
+    """wttr.in for a place (a city, an airport code, ~a landmark), or for the network's location when empty."""
+    from urllib.parse import quote
+
+    place = quote(" ".join(location.split()).replace(" ", "+"), safe="+~@,") if location else ""
+    return f"https://wttr.in/{place}?format=%l:+%c+%t+(%C),+wind+%w"
+
+
+def weather_cmd(args: list[str]) -> int:
+    if not args:
+        return notice("weather")
+    if args[0] != "location":
+        die("weather | weather location [--set <place> | --clear]", 2)
+    if len(args) > 1 and args[1] == "--set":
+        place = " ".join(args[2:]).strip()
+        if not place:
+            die("weather location --set <city, airport code or ~landmark>", 2)
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        WEATHER_FILE.write_text(place + "\n")
+    elif len(args) > 1 and args[1] == "--clear":
+        WEATHER_FILE.unlink(missing_ok=True)
+    elif len(args) > 1:
+        die("weather location [--set <place> | --clear]", 2)
+    print(weather_location() or "automatic (from your network)")
+    return 0
+
+
+def screenshot() -> int:
+    out_dir = HOME / "Pictures" / "Screenshots"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"Screenshot {datetime.now():%Y-%m-%d %H-%M-%S}.png"
+    code = subprocess.call(["grim", str(path)]) if shutil.which("grim") else niri("screenshot-screen")
+    if code != 0 or not path.exists():
+        die("screenshot failed", code or 1)
+    reply = relay("ask", ["Here is a screenshot I just took. What do you see?"], {"attachments": [str(path)]}, quiet=True)
+    if not reply.get("ok"):
+        print(str(path))
+    return 0
+
+
+CAPTURES = Path(tempfile.gettempdir()) / "herald-os-captures"
+
+
+def capture(args: list[str]) -> int:
+    sub = args[0] if args else ""
+    if sub == "region":
+        for tool in ("grim", "slurp"):
+            if not shutil.which(tool):
+                die(f"{tool} is not installed (dnf install grim slurp)", 127)
+        region = sh(["slurp"], timeout=300)
+        if region.returncode != 0 or not region.stdout.strip():
+            return 1
+        ask = "--ask" in args
+        out_dir = CAPTURES if ask else HOME / "Pictures" / "Screenshots"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"Screenshot {datetime.now():%Y-%m-%d %H-%M-%S}.png"
+        if subprocess.call(["grim", "-g", region.stdout.strip(), str(path)]) != 0 or not path.exists():
+            die("the screenshot failed", 1)
+        if ask:
+            # The command overlay opens with the picture attached; the person types the question.
+            reply = relay("ask", [], {"attachments": [str(path)]}, quiet=True)
+            if not reply.get("ok"):
+                print(str(path))
+            return 0
+        print(str(path))
+        return 0
+    if sub == "screenshot":
+        mode = next((a for a in args[1:] if a in ("region", "window", "screen")), "region")
+        return run_os("capture.screenshot", {"mode": mode, **({"edit": True} if "--edit" in args else {})})
+    if sub == "record":
+        return run_os("capture.record", {"action": "toggle", "region": "region" in args, "audio": "audio" in args or "--audio" in args})
+    if sub == "stop":
+        return run_os("capture.record", {"action": "stop"})
+    if sub == "color":
+        return capture_color()
+    if sub == "qr":
+        return capture_qr()
+    if sub == "text":
+        return ocr()
+    if sub == "transcode" and len(args) >= 2:
+        return transcode(Path(args[1]).expanduser(), args[2] if len(args) > 2 else "gif")
+    if sub == "share" and len(args) >= 2:
+        return share(Path(args[1]).expanduser())
+    die("capture region [--ask] | screenshot [region|window|screen] [--edit] | record [region] [audio] | stop | color | qr | text | transcode <file> [gif|mp4|webm] | share <file>", 2)
+    return 2
+
+
+def need(*tools: str) -> None:
+    for tool in tools:
+        if not shutil.which(tool):
+            die(f"{tool} is not installed (dnf install {tool if tool != 'zbarimg' else 'zbar'})", 127)
+
+
+def capture_color() -> int:
+    """Click a point; its colour goes on the clipboard as #rrggbb."""
+    need("slurp", "grim", "wl-copy")
+    point = sh(["slurp", "-p"], timeout=300)
+    if point.returncode != 0 or not point.stdout.strip():
+        return 1
+    grab = subprocess.run(["grim", "-g", point.stdout.strip(), "-t", "ppm", "-"], capture_output=True, timeout=30)
+    data = grab.stdout
+    # Binary PPM: "P6", width, height and max value, each followed by whitespace, then RGB bytes.
+    fields, index = [], 0
+    while len(fields) < 4 and index < len(data):
+        while index < len(data) and data[index:index + 1].isspace():
+            index += 1
+        start = index
+        while index < len(data) and not data[index:index + 1].isspace():
+            index += 1
+        fields.append(data[start:index])
+    pixel = data[index + 1:index + 4]
+    if fields[:1] != [b"P6"] or len(pixel) < 3:
+        die("could not read the colour", 1)
+    hex_colour = "#{:02x}{:02x}{:02x}".format(*pixel)
+    subprocess.run(["wl-copy"], input=hex_colour.encode(), check=False)
+    notify("Colour copied", hex_colour)
+    print(hex_colour)
+    return 0
+
+
+def capture_qr() -> int:
+    """Select a QR code or barcode; what it says goes on the clipboard."""
+    need("slurp", "grim", "zbarimg", "wl-copy")
+    region = sh(["slurp"], timeout=300)
+    if region.returncode != 0 or not region.stdout.strip():
+        return 1
+    grab = subprocess.run(["grim", "-g", region.stdout.strip(), "-t", "png", "-"], capture_output=True, timeout=30)
+    decoded = subprocess.run(["zbarimg", "--raw", "-q", "-"], input=grab.stdout, capture_output=True, timeout=30)
+    text = decoded.stdout.decode(errors="replace").strip()
+    if not text:
+        notify("No code found", "The selection had no QR code or barcode")
+        return 1
+    subprocess.run(["wl-copy"], input=text.encode(), check=False)
+    notify("Code copied", text[:160])
+    print(text)
+    return 0
+
+
+def transcode(source: Path, target: str) -> int:
+    """A recording as a GIF, a smaller MP4 or a WebM, next to the original."""
+    need("ffmpeg")
+    if not source.is_file():
+        die(f"no such file: {source}", 1)
+    if target not in ("gif", "mp4", "webm"):
+        die("transcode <file> gif|mp4|webm", 2)
+    out = source.with_name(f"{source.stem}{' (small)' if target == source.suffix.lstrip('.') else ''}.{target}")
+    base = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(source)]
+    if target == "gif":
+        attempts = [base + ["-vf", "fps=12,scale='min(960,iw)':-1:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse", str(out)]]
+    elif target == "webm":
+        attempts = [base + ["-c:v", "libvpx-vp9", "-crf", "36", "-b:v", "0", "-c:a", "libopus", str(out)]]
+    else:
+        # Fedora's ffmpeg-free has no x264; OpenH264 is the fallback encoder there.
+        attempts = [
+            base + ["-c:v", "libx264", "-crf", "28", "-preset", "veryfast", "-movflags", "+faststart", "-c:a", "aac", str(out)],
+            base + ["-c:v", "libopenh264", "-b:v", "2M", "-movflags", "+faststart", "-c:a", "aac", str(out)],
+        ]
+    notify("Converting", f"{source.name} to {target.upper()}")
+    for argv in attempts:
+        if subprocess.run(argv, check=False, timeout=3600).returncode == 0 and out.exists():
+            notify("Converted", out.name)
+            print(out)
+            return 0
+    die(f"ffmpeg could not make a {target.upper()} of {source.name}", 1)
+    return 1
+
+
+def share(target: Path) -> int:
+    """The file goes on the clipboard (paste it into a chat or a folder); LocalSend opens when installed."""
+    if not target.exists():
+        die(f"no such file: {target}", 1)
+    need("wl-copy")
+    subprocess.run(["wl-copy", "--type", "text/uri-list"], input=f"{target.resolve().as_uri()}\n".encode(), check=False)
+    localsend = shutil.which("flatpak") and subprocess.run(["flatpak", "info", "org.localsend.localsend_app"], capture_output=True, check=False).returncode == 0
+    if localsend:
+        subprocess.Popen(["flatpak", "run", "org.localsend.localsend_app"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    notify("Ready to share", f"{target.name} is on the clipboard" + (" and LocalSend is open" if localsend else ""))
+    return 0
+
+
+def ocr() -> int:
+    for tool in ("grim", "slurp", "tesseract", "wl-copy"):
+        if not shutil.which(tool):
+            die(f"{tool} is not installed (dnf install grim slurp tesseract tesseract-langpack-eng wl-clipboard)", 127)
+    region = sh(["slurp"], timeout=120)
+    if region.returncode != 0 or not region.stdout.strip():
+        return 1
+    grab = subprocess.run(["grim", "-g", region.stdout.strip(), "-"], capture_output=True, timeout=30)
+    text = subprocess.run(["tesseract", "stdin", "stdout", "--psm", "6"], input=grab.stdout, capture_output=True, timeout=60).stdout.decode().strip()
+    if not text:
+        notify("No text found", "The selection had no readable text")
+        return 1
+    subprocess.run(["wl-copy"], input=text.encode(), check=False)
+    preview = text.replace("\n", " ")
+    notify("Text copied", preview[:120] + ("…" if len(preview) > 120 else ""))
+    print(text)
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------
+# Switches. Night light and staying awake are system units the shell's menu bar reflects; do not
+# disturb and the screensaver are shell settings.
+STAY_AWAKE = STATE_DIR / "stay-awake"
+NIGHTLIGHT_UNIT = "herald-os-nightlight"
+
+
+def unit_active(unit: str) -> bool:
+    return subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit], check=False).returncode == 0
+
+
+IDLE_CONF = CONFIG_DIR / "idle.conf"
+IDLE_KEYS = {"lock": "lock", "screen_off": "screenOff", "suspend": "suspend"}
+
+
+def idle_cmd(args: list[str]) -> int:
+    sub = args[0] if args else "show"
+    if sub == "show":
+        print(IDLE_CONF.read_text().strip() if IDLE_CONF.exists() else "defaults: lock=600 screen_off=900 suspend=0 (seconds)")
+        return 0
+    if sub != "set" or len(args) < 2:
+        die("idle show | idle set lock=<min> screen_off=<min> suspend=<min>", 2)
+    minutes: dict[str, int] = {}
+    for pair in args[1:]:
+        key, _, value = pair.partition("=")
+        if key not in IDLE_KEYS or not value.isdigit():
+            die(f"bad setting {pair!r}: use lock=, screen_off= or suspend= with minutes", 2)
+        minutes[key] = int(value)
+    reply = relay("os", ["idle.set", json.dumps({IDLE_KEYS[key]: value for key, value in minutes.items()})], quiet=True)
+    if reply.get("ok"):
+        return 0
+    # No shell: edit the timings swayidle reads directly.
+    current = {line.split("=", 1)[0]: line.split("=", 1)[1] for line in (IDLE_CONF.read_text().splitlines() if IDLE_CONF.exists() else []) if "=" in line and not line.startswith("#")}
+    current.update({key: str(value * 60) for key, value in minutes.items()})
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    IDLE_CONF.write_text("".join(f"{key}={value}\n" for key, value in current.items()))
+    if not STAY_AWAKE.exists():
+        subprocess.run(["herald-os-idle", "restart"], check=False)
+    return 0
+
+
+def toggle(args: list[str]) -> int:
+    if not args or args[0] not in ("nightlight", "dnd", "idle", "screensaver"):
+        die("toggle nightlight|dnd|idle|screensaver [on|off]", 2)
+    name, wanted = args[0], (args[1] if len(args) > 1 else "")
+    if wanted not in ("", "on", "off"):
+        die("toggle <name> [on|off]", 2)
+    if name == "nightlight":
+        on = (not unit_active(NIGHTLIGHT_UNIT)) if not wanted else wanted == "on"
+        if on:
+            if not shutil.which("wlsunset"):
+                die("wlsunset is not installed (dnf install wlsunset)", 127)
+            subprocess.run(["systemctl", "--user", "stop", NIGHTLIGHT_UNIT], check=False, capture_output=True)
+            # Warm all day from now (sunset at midnight, sunrise a minute before the next one).
+            temperature = (CONFIG_DIR / "nightlight-temperature").read_text().strip() if (CONFIG_DIR / "nightlight-temperature").exists() else "4000"
+            sh(["systemd-run", "--user", "--quiet", "--collect", f"--unit={NIGHTLIGHT_UNIT}", f"--setenv=WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY', '')}",
+                "wlsunset", "-t", temperature, "-T", "6500", "-s", "00:00", "-S", "23:59", "-d", "1"], timeout=15)
+        else:
+            subprocess.run(["systemctl", "--user", "stop", NIGHTLIGHT_UNIT], check=False, capture_output=True)
+        relay("switches", [], quiet=True)
+        print(f"night light {'on' if on else 'off'}")
+        return 0
+    if name == "idle":
+        on = (not STAY_AWAKE.exists()) if not wanted else wanted == "on"
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        if on:
+            STAY_AWAKE.touch()
+            subprocess.run(["herald-os-idle", "stop"], check=False, capture_output=True)
+        else:
+            STAY_AWAKE.unlink(missing_ok=True)
+            subprocess.run(["herald-os-idle", "start"], check=False, capture_output=True)
+        relay("switches", [], quiet=True)
+        print(f"stay awake {'on' if on else 'off'}")
+        return 0
+    # Do not disturb and the screensaver live in the shell's preferences; no on/off flips them.
+    command = {"dnd": "dnd.set", "screensaver": "screensaver.set"}[name]
+    return run_os(command, {"enabled": wanted == "on"} if wanted else {})
+
+
+# ---------------------------------------------------------------------------------------------
+# Events and hooks: scripts in ~/.config/herald-os/hooks/<event>.d/ run when the event happens.
+EVENT_NAMES = ("login", "wake", "sleep", "lock", "unlock", "returned", "battery-low", "network-change", "theme-set", "crash", "after-update")
+HOOKS_DIR = CONFIG_DIR / "hooks"
+HOOK_TIMEOUT = 120
+
+
+def hook_scripts(event_name: str) -> list[Path]:
+    folder = HOOKS_DIR / f"{event_name}.d"
+    if not folder.is_dir():
+        return []
+    return [p for p in sorted(folder.iterdir()) if p.is_file() and os.access(p, os.X_OK) and not p.name.startswith(".") and not p.name.endswith((".sample", "~"))]
+
+
+def run_hooks_here(event_name: str, detail: dict[str, str]) -> None:
+    """The shell runs hooks itself; without it (a TTY, an update before login) they run from here."""
+    env = {**os.environ, "HERALD_EVENT": event_name, "HERALD_EVENT_AT": datetime.now().astimezone().isoformat(),
+           "HERALD_EVENT_JSON": json.dumps({"name": event_name, "detail": detail})}
+    env.update({f"HERALD_EVENT_{re.sub(r'[^A-Z0-9]+', '_', key.upper())}": value for key, value in detail.items()})
+    for script in hook_scripts(event_name):
+        try:
+            subprocess.run([str(script), event_name], env=env, timeout=HOOK_TIMEOUT, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"herald-os: hook {script.name}: {exc}", file=sys.stderr)
+
+
+def event_cmd(args: list[str]) -> int:
+    if not args or args[0] not in EVENT_NAMES:
+        die(f"event <name> [key=value ...]; names: {', '.join(EVENT_NAMES)}", 2)
+    name, pairs = args[0], args[1:]
+    reply = relay("event", [name, *pairs], quiet=True)
+    if not reply.get("ok"):
+        run_hooks_here(name, dict(pair.split("=", 1) for pair in pairs if "=" in pair))
+    return 0
+
+
+def hook_cmd(args: list[str]) -> int:
+    sub = args[0] if args else "list"
+    if sub == "dir":
+        print(HOOKS_DIR)
+        return 0
+    if sub == "list":
+        for name in EVENT_NAMES:
+            scripts = hook_scripts(name)
+            print(f"{name:<15} {', '.join(s.name for s in scripts) if scripts else '-'}")
+        return 0
+    if sub == "install" and len(args) == 3:
+        name, source = args[1], Path(args[2]).expanduser()
+        if name not in EVENT_NAMES:
+            die(f"no event called {name!r}; events: {', '.join(EVENT_NAMES)}", 2)
+        if not source.is_file():
+            die(f"no such script: {args[2]}", 1)
+        target = HOOKS_DIR / f"{name}.d" / source.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        target.chmod(target.stat().st_mode | 0o755)
+        print(f"installed {target}")
+        return 0
+    die("hook list | hook install <event> <script> | hook dir", 2)
+    return 2
+
+
+# ---------------------------------------------------------------------------------------------
+# Crashes: core dumps from systemd-coredump; the shell turns a diagnosis into a Hermes chat.
+def run_os(command: str, args: dict | None = None) -> int:
+    """Run a registry command in the Hermes window (fire and forget; the shell reports the result)."""
+    reply = relay("os", [command, json.dumps(args or {})])
+    if not reply.get("ok"):
+        die(reply.get("error") or f"the shell rejected {command}", 1)
+    return 0
+
+
+def run_os_wait(command: str, args: dict | None = None, timeout: float = 30) -> dict:
+    """Run a registry command and return its result ({ok, summary, data}); exits on failure."""
+    reply = relay("os-run", [command, json.dumps(args or {})], timeout=timeout)
+    if not reply.get("ok"):
+        die(reply.get("error") or reply.get("summary") or f"the shell rejected {command}", 1)
+    return reply
+
+
+# ---------------------------------------------------------------------------------------------
+# Herald Canvas: the image editor, through the same canvas.* commands Hermes uses.
+CANVAS_USAGE = (
+    "canvas open [<file>] | new [<name>] [<width>x<height>] | status | layers [<project>] | history [<project>] "
+    "| text <words> [--x <px>] [--y <px>] [--width <px>] [--size <px>] [--font <family>] [--color <css>] [--align left|center|right] "
+    "| resize <width>x<height> [--anchor <where>] [--image] | resize --scale <n> | crop [<x> <y> <width> <height>] [--ratio <w:h>] [--angle <degrees>] "
+    "| preview [<project>] [--size <px>] | export <file> [--project <project>] [--scale <n>] [--quality <0-1>] [--overwrite] | undo | redo [--steps <n>] "
+    "| auto [tone|contrast|color] [--cutoff <percent>] | align <edges> [--layers <a,b>] [--to canvas|layers|selection] [--margin <px>] "
+    "| distribute <horizontal|vertical|left|center|right|top|middle|bottom> --layers <a,b,c> "
+    "| guides [list|clear] | guides add|remove <vertical|horizontal> <position> | guides add [--margins <m>] [--columns <n>] [--gutter <px>] [--center] "
+    "| filter <kind> [--amount <n>] [--radius <px>] [--threshold <n>] [--angle <deg>] [--distance <px>] [--strength <n>] [--settings <json>] [--layer <layer>] "
+    "| mask <layer> <reveal|hide|reveal-selection|hide-selection|invert|apply|enable|disable|remove|link|unlink> [--project <project>] "
+    "| remove-background [<layer>] [--cutout] [--project <project>] | fill <x> <y> <width> <height> [--layer <layer>] [--new-layer] [--project <project>]"
+)
+
+# What `canvas mask` does, as canvas.mask names it.
+CANVAS_MASK_ACTIONS = ("reveal", "hide", "revealSelection", "hideSelection", "invert", "apply", "enable", "disable", "remove", "link", "unlink")
+
+
+def _absolute(value: str) -> str:
+    return str(Path(value).expanduser().resolve())
+
+
+def canvas_request(args: list[str]) -> tuple[str, dict]:
+    """(command id, arguments) for `herald-os canvas ...` (pure; tested)."""
+    sub, rest = (args[0], args[1:]) if args else ("open", [])
+    flags: dict[str, str | bool] = {}
+    words: list[str] = []
+    i = 0
+    while i < len(rest):
+        token = rest[i]
+        if token in ("--overwrite", "--json", "--image", "--cutout", "--new-layer", "--center"):
+            flags[token[2:]] = True
+        elif token.startswith("--") and i + 1 < len(rest):
+            flags[token[2:]] = rest[i + 1]
+            i += 1
+        else:
+            words.append(token)
+        i += 1
+    if sub == "open":
+        return "canvas.open", ({"path": _absolute(words[0])} if words else {})
+    if sub == "new":
+        payload: dict = {}
+        for word in words:
+            size = re.fullmatch(r"(\d+)[x×](\d+)", word)
+            if size:
+                payload["width"], payload["height"] = int(size.group(1)), int(size.group(2))
+            else:
+                payload["name"] = f"{payload['name']} {word}" if "name" in payload else word
+        if "background" in flags:
+            payload["background"] = flags["background"]
+        return "canvas.new", payload
+    if sub == "status":
+        return "canvas.status", {}
+    if sub in ("layers", "undo", "redo", "history"):
+        payload = {"project": _absolute(words[0])} if words else {}
+        if sub in ("undo", "redo") and "steps" in flags:
+            payload["steps"] = int(str(flags["steps"]))
+        return f"canvas.{sub}", payload
+    if sub == "preview":
+        payload = {"project": _absolute(words[0])} if words else {}
+        if "size" in flags:
+            payload["size"] = int(str(flags["size"]))
+        return "canvas.preview", payload
+    if sub == "text":
+        if not words:
+            die(f"herald-os {CANVAS_USAGE}", 2)
+        payload = {"content": " ".join(words)}
+        for key in ("x", "y", "width", "size"):
+            if key in flags:
+                payload[key] = float(str(flags[key]))
+        for key in ("font", "color", "align", "name"):
+            if key in flags:
+                payload[key] = str(flags[key])
+        if "project" in flags:
+            payload["project"] = _absolute(str(flags["project"]))
+        return "canvas.addText", payload
+    if sub == "resize":
+        payload = {}
+        size = re.fullmatch(r"(\d+)[x×](\d+)", words[0]) if words else None
+        if size:
+            payload["width"], payload["height"] = int(size.group(1)), int(size.group(2))
+        if "scale" in flags:
+            payload["scale"] = float(str(flags["scale"]))
+        if not payload:
+            die(f"herald-os {CANVAS_USAGE}", 2)
+        if "anchor" in flags:
+            payload["anchor"] = str(flags["anchor"])
+        if flags.get("image"):
+            payload["image"] = True
+        if "project" in flags:
+            payload["project"] = _absolute(str(flags["project"]))
+        return "canvas.resize", payload
+    if sub == "crop":
+        # A box, a ratio, an angle to straighten by, or a box with either.
+        shaped = "ratio" in flags or "angle" in flags
+        if (words or not shaped) and (len(words) != 4 or not all(re.fullmatch(r"-?\d+", word) for word in words)):
+            die(f"herald-os {CANVAS_USAGE}", 2)
+        payload = dict(zip(("x", "y", "width", "height"), (int(word) for word in words)))
+        if "ratio" in flags:
+            payload["ratio"] = str(flags["ratio"])
+        if "angle" in flags:
+            payload["angle"] = float(str(flags["angle"]))
+        if "project" in flags:
+            payload["project"] = _absolute(str(flags["project"]))
+        return "canvas.crop", payload
+    if sub == "filter":
+        if not words:
+            die(f"herald-os {CANVAS_USAGE}", 2)
+        payload = {"kind": " ".join(words)}
+        settings = json.loads(str(flags["settings"])) if "settings" in flags else {}
+        for key in ("amount", "radius", "threshold", "angle", "distance", "strength"):
+            if key in flags:
+                settings[key] = float(str(flags[key]))
+        if settings:
+            payload["settings"] = json.dumps(settings)
+        if "layer" in flags:
+            payload["layer"] = str(flags["layer"])
+        if "project" in flags:
+            payload["project"] = _absolute(str(flags["project"]))
+        return "canvas.filter", payload
+    if sub == "guides":
+        action = words[0] if words else "list"
+        if action not in ("add", "remove", "clear", "list") or (action in ("clear", "list") and len(words) > 1):
+            die(f"herald-os {CANVAS_USAGE}", 2)
+        payload = {"action": action}
+        if len(words) == 3:
+            payload["axis"], payload["position"] = words[1], words[2]
+        elif len(words) > 1:
+            die(f"herald-os {CANVAS_USAGE}", 2)
+        for key in ("margins", "columns", "gutter"):
+            if key in flags:
+                payload[key] = str(flags[key]) if key == "margins" else float(str(flags[key]))
+        if flags.get("center"):
+            payload["center"] = True
+        if "project" in flags:
+            payload["project"] = _absolute(str(flags["project"]))
+        return "canvas.guides", payload
+    if sub == "auto":
+        if len(words) > 1:
+            die(f"herald-os {CANVAS_USAGE}", 2)
+        payload = {"kind": words[0]} if words else {}
+        if "cutoff" in flags:
+            payload["cutoff"] = float(str(flags["cutoff"]))
+        if "project" in flags:
+            payload["project"] = _absolute(str(flags["project"]))
+        return "canvas.autoAdjust", payload
+    if sub in ("align", "distribute"):
+        if not words:
+            die(f"herald-os {CANVAS_USAGE}", 2)
+        payload = {"edge" if sub == "align" else "distribute": ",".join(words)}
+        for key in ("layers", "to"):
+            if key in flags:
+                payload[key] = str(flags[key])
+        if "margin" in flags:
+            payload["margin"] = float(str(flags["margin"]))
+        if "project" in flags:
+            payload["project"] = _absolute(str(flags["project"]))
+        return "canvas.align", payload
+    if sub == "export":
+        if not words:
+            die(f"herald-os {CANVAS_USAGE}", 2)
+        payload = {"to": _absolute(words[0])}
+        if "project" in flags:
+            payload["project"] = _absolute(str(flags["project"]))
+        for key in ("scale", "quality"):
+            if key in flags:
+                payload[key] = float(str(flags[key]))
+        if "format" in flags:
+            payload["format"] = flags["format"]
+        if flags.get("overwrite"):
+            payload["overwrite"] = True
+        return "canvas.export", payload
+    if sub == "mask":
+        # "reveal-selection", "hide_selection" and "hideSelection" all mean the same.
+        wanted = re.sub(r"[^a-z]", "", words[-1].lower()) if len(words) == 2 else ""
+        action = next((name for name in CANVAS_MASK_ACTIONS if name.lower() == wanted), None)
+        if not action:
+            die(f"herald-os {CANVAS_USAGE}", 2)
+        payload = {"layer": words[0], "action": action}
+        if "project" in flags:
+            payload["project"] = _absolute(str(flags["project"]))
+        return "canvas.mask", payload
+    if sub == "remove-background":
+        payload = {"layer": " ".join(words)} if words else {}
+        if flags.get("cutout"):
+            payload["mode"] = "cutout"
+        if "project" in flags:
+            payload["project"] = _absolute(str(flags["project"]))
+        return "canvas.removeBackground", payload
+    if sub == "fill":
+        if len(words) != 4 or not all(re.fullmatch(r"-?\d+", word) for word in words):
+            die(f"herald-os {CANVAS_USAGE}", 2)
+        payload = dict(zip(("x", "y", "width", "height"), (int(word) for word in words)))
+        if "layer" in flags:
+            payload["layer"] = str(flags["layer"])
+        if flags.get("new-layer"):
+            payload["newLayer"] = True
+        if "project" in flags:
+            payload["project"] = _absolute(str(flags["project"]))
+        return "canvas.contentFill", payload
+    die(f"herald-os {CANVAS_USAGE}", 2)
+    return "", {}
+
+
+def canvas_cmd(args: list[str]) -> int:
+    command, payload = canvas_request(args)
+    reply = run_os_wait(command, payload, timeout=120)
+    data = reply.get("data") or {}
+    if "--json" in args:
+        print(json.dumps(data, indent=2))
+        return 0
+    if command == "canvas.layers":
+        print(f"{data.get('name')}: {data.get('width')}×{data.get('height')}")
+        for layer in data.get("layers") or []:
+            marks = [str(layer.get("kind"))] + ([] if layer.get("visible", True) else ["hidden"]) + ([f"{round(layer['opacity'] * 100)}%"] if layer.get("opacity", 1) < 1 else [])
+            print(f"  {layer.get('name')}  ({', '.join(marks)})")
+        return 0
+    if command == "canvas.guides" and payload.get("action") == "list":
+        print(reply.get("summary") or "")
+        for guide in data.get("guides") or []:
+            print(f"  {guide.get('axis'):<10} {guide.get('position')}")
+        return 0
+    if command == "canvas.history":
+        print(reply.get("summary") or "")
+        for step in data.get("steps") or []:
+            mark = "*" if step.get("step") == data.get("applied") else " "
+            notes = [note for note in (step.get("by"), "undone" if step.get("undone") else None) if note]
+            print(f"{mark} {step.get('step'):>3}  {step.get('label')}{'  (' + ', '.join(notes) + ')' if notes else ''}")
+        return 0
+    if command == "canvas.status":
+        for doc in data.get("documents") or []:
+            print(f"{'*' if doc.get('active') else ' '} {doc.get('name')}  {doc.get('width')}×{doc.get('height')}  {doc.get('path') or 'not saved'}{'  (edited)' if doc.get('modified') else ''}")
+        if not data.get("documents"):
+            print("Nothing is open in Herald Canvas.")
+        return 0
+    print(reply.get("summary") or "done")
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------
+# Herald Docs and Herald Sheets: documents and workbooks, through the same docs.* and sheets.*
+# commands Hermes uses.
+DOCS_USAGE = (
+    "docs open [<file>] | new [<name>] [--template <template>] [--path <file>] [--content <markdown>|-] | list "
+    "| read [<document>] [--part markdown|text|outline|selection] [--heading <heading>] | find <text> [--document <document>] "
+    "| write <markdown>|- [--document <document>] [--at end|start|selection|marked|after|heading] [--heading <heading>] [--mode append|prepend|replace] "
+    "| replace <find> <replacement> [--document <document>] [--first] "
+    "| format [--document <document>] [--at selection|marked|all|heading|section|text] [--heading <heading>] [--text <text>] [--style <style>] "
+    "[--bold|--no-bold] [--italic|--no-italic] [--underline|--no-underline] [--strike|--no-strike] [--color <css>] [--highlight <css>] [--font <family>] "
+    "[--size <points>] [--align left|center|right|justify] [--line-spacing <n>] [--link <url>] [--clear] "
+    "| table <json-rows>|- [--document <document>] [--at <where>] [--heading <heading>] [--no-header] "
+    "| image <file> [--document <document>] [--width <px>] [--alt <text>] [--at <where>] "
+    "| insert-range [<range>] [--workbook <workbook>] [--sheet <sheet>] [--document <document>] [--at <where>] [--heading <heading>] [--no-header] "
+    "| save [<document>] [--to <file>] [--overwrite] | pdf [<document>] [--to <file>] [--overwrite] | undo|redo [<document>] [--steps <n>]"
+)
+SHEETS_USAGE = (
+    "sheets open [<file>] | new [<name>] [--template budget|expenses|todo|schedule|invoice] [--path <file>] | list "
+    "| read [<range>] [--workbook <workbook>] [--sheet <sheet>] | find <text> [--workbook <workbook>] [--sheet <sheet>] "
+    "| write <range> <value>... | write <range> <json-rows> | fill <range> [<formula>] | format <range> <json> "
+    "| sort <range> --by <column> [--descending] [--header] | filter <range> --by <column> --values <json-list> "
+    "| filter <range> --by <column> --condition <json> | filter --clear | freeze <rows> [<columns>] "
+    "| add-sheet [<name>] [--index <n>] | rename-sheet <sheet> <name> | remove-sheet <sheet> | replace <find> <replacement> [--range <range>] [--first] "
+    "| clean <range> dedupe|trim|numbers|dates|split|case [--header] [--by <columns>] [--delimiter <d>] [--order dmy|mdy] [--date-format <format>] "
+    "[--case upper|lower|title] [--overwrite] | save [<workbook>] [--to <file>] [--overwrite] | pdf [<workbook>] [--to <file>] [--overwrite] "
+    "| undo|redo [<workbook>] [--steps <n>]; every command but open, new and list takes --workbook <workbook>, and the ones on cells --sheet <sheet>"
+)
+SLIDES_USAGE = (
+    "slides open [<file>] | new [<name>] [--theme <theme>] [--size wide|standard] [--path <file>] [--slides <json>|-] | list "
+    "| read [<presentation>] [--slide <slide>] "
+    "| add-slide [<title>] [--layout <layout>] [--body <text>|-] [--notes <text>] [--after <slide>] "
+    "| set-slide <slide> [--title <title>] [--body <text>|-] [--notes <text>] [--layout <layout>] [--hidden|--shown] [--background <colour>] "
+    "| notes <slide> <text>|- | move <slide> <number|first|last> | remove <slide> | theme <theme> "
+    "| from-doc [<document>] [--level <n>] [--notes] | insert-range [<range>] [--workbook <workbook>] [--sheet <sheet>] [--slide <slide>] "
+    "| replace <find> <replacement> [--first] | save [<presentation>] [--to <file>] [--overwrite] | pdf [<presentation>] [--to <file>] [--overwrite] "
+    "| undo|redo [<presentation>] [--steps <n>]; every command but open, new and list takes --presentation <presentation> "
+    "(for from-doc, the deck the slides are added to); a slide is its number, id or title"
+)
+
+# What `sheets clean` does, as sheets.clean names it.
+SHEETS_CLEAN_ACTIONS = ("dedupe", "trim", "numbers", "dates", "split", "case")
+# The flags that take no value; every other flag takes the word after it.
+OFFICE_SWITCHES = ("--json", "--overwrite", "--first", "--header", "--no-header", "--descending", "--clear", "--bold", "--no-bold", "--italic", "--no-italic", "--underline", "--no-underline", "--strike", "--no-strike", "--hidden", "--shown")
+
+
+def _office_words(rest: list[str], usage: str, switches: tuple[str, ...] = OFFICE_SWITCHES) -> tuple[list[str], dict[str, str | bool]]:
+    words: list[str] = []
+    flags: dict[str, str | bool] = {}
+    i = 0
+    while i < len(rest):
+        token = rest[i]
+        if token in switches:
+            flags[token[2:]] = True
+        elif token.startswith("--"):
+            if i + 1 == len(rest):
+                die(f"herald-os {usage}", 2)
+            flags[token[2:]] = rest[i + 1]
+            i += 1
+        else:
+            words.append(token)
+        i += 1
+    return words, flags
+
+
+def _office_ref(value: str) -> str:
+    """A document or workbook as the commands take it: a file by its absolute path, or the name of an
+    open one as its tab shows it."""
+    return _absolute(value) if "/" in value or value.startswith("~") or Path(value).exists() else value
+
+
+def _stdin_or(value: str) -> str:
+    return sys.stdin.read() if value == "-" else value
+
+
+def _json_text(value: str, kind: type, example: str) -> str:
+    """`value` checked to be a JSON list or object, passed on as JSON text."""
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        parsed = None
+    if not isinstance(parsed, kind):
+        die(f"expected JSON like {example}, not {value[:60]!r}", 2)
+    return json.dumps(parsed)
+
+
+def _number(value: str | bool, usage: str) -> float:
+    try:
+        return float(str(value))
+    except ValueError:
+        die(f"herald-os {usage}", 2)
+    return 0.0
+
+
+def _count(value: str | bool, usage: str) -> int:
+    if not re.fullmatch(r"\d+", str(value)):
+        die(f"herald-os {usage}", 2)
+    return int(str(value))
+
+
+def docs_request(args: list[str]) -> tuple[str, dict]:
+    """(command id, arguments) for `herald-os docs ...` (pure; tested)."""
+    sub, rest = (args[0], args[1:]) if args else ("open", [])
+    words, flags = _office_words(rest, DOCS_USAGE)
+    text = " ".join(words)
+    if sub == "open":
+        return "docs.open", ({"path": _absolute(text)} if words else {})
+    if sub == "new":
+        payload: dict = {"name": text} if words else {}
+        if "template" in flags:
+            payload["template"] = str(flags["template"])
+        if "path" in flags:
+            payload["path"] = _absolute(str(flags["path"]))
+        if "content" in flags:
+            payload["content"] = _stdin_or(str(flags["content"]))
+        return "docs.new", payload
+    if sub == "list":
+        return "docs.list", {}
+    payload = {"document": _office_ref(str(flags["document"]))} if "document" in flags else {}
+    if sub in ("read", "save", "pdf", "undo", "redo") and words:
+        payload["document"] = _office_ref(text)
+    placed = {key: str(flags[key]) for key in ("at", "heading", "mode") if key in flags}
+    if sub == "read":
+        return "docs.read", {**payload, **{key: str(flags[key]) for key in ("part", "heading") if key in flags}}
+    if sub == "find":
+        if not words:
+            die(f"herald-os {DOCS_USAGE}", 2)
+        return "docs.find", {**payload, "text": text}
+    if sub == "write":
+        content = _stdin_or(text)
+        if not content.strip():
+            die("docs write: nothing to write (give the Markdown, or - to read it from stdin)", 2)
+        return "docs.write", {**payload, "content": content, **placed}
+    if sub == "replace":
+        if len(words) != 2:
+            die(f"herald-os {DOCS_USAGE}", 2)
+        payload.update({"find": words[0], "replacement": words[1]})
+        if flags.get("first"):
+            payload["all"] = False
+        return "docs.replace", payload
+    if sub == "format":
+        changes: dict = {key: str(flags[key]) for key in ("style", "color", "highlight", "font", "link", "align") if key in flags}
+        for key in ("bold", "italic", "underline", "strike"):
+            if flags.get(key) or flags.get(f"no-{key}"):
+                changes[key] = bool(flags.get(key))
+        if "size" in flags:
+            changes["size"] = _number(flags["size"], DOCS_USAGE)
+        if "line-spacing" in flags:
+            changes["lineSpacing"] = _number(flags["line-spacing"], DOCS_USAGE)
+        if flags.get("clear"):
+            changes["clear"] = True
+        if words or not changes:
+            die(f"herald-os {DOCS_USAGE}", 2)
+        return "docs.format", {**payload, **{key: str(flags[key]) for key in ("at", "heading", "text") if key in flags}, **changes}
+    if sub == "table":
+        if len(words) != 1:
+            die(f"herald-os {DOCS_USAGE}", 2)
+        payload["cells"] = _json_text(_stdin_or(words[0]), list, '[["Item", "Cost"], ["Rent", "1200"]]')
+        if flags.get("no-header"):
+            payload["header"] = False
+        return "docs.insertTable", {**payload, **placed}
+    if sub == "image":
+        if not words:
+            die(f"herald-os {DOCS_USAGE}", 2)
+        payload["source"] = _absolute(text)
+        if "width" in flags:
+            payload["width"] = _number(flags["width"], DOCS_USAGE)
+        if "alt" in flags:
+            payload["alt"] = str(flags["alt"])
+        return "docs.insertImage", {**payload, **placed}
+    if sub == "insert-range":
+        if words:
+            payload["range"] = text
+        if "workbook" in flags:
+            payload["workbook"] = _office_ref(str(flags["workbook"]))
+        if "sheet" in flags:
+            payload["sheet"] = str(flags["sheet"])
+        if flags.get("no-header"):
+            payload["header"] = False
+        return "docs.insertRange", {**payload, **placed}
+    if sub in ("save", "pdf"):
+        if "to" in flags:
+            payload["to"] = _absolute(str(flags["to"]))
+        if flags.get("overwrite"):
+            payload["overwrite"] = True
+        return ("docs.save" if sub == "save" else "docs.exportPdf"), payload
+    if sub in ("undo", "redo"):
+        if "steps" in flags:
+            payload["steps"] = _count(flags["steps"], DOCS_USAGE)
+        return f"docs.{sub}", payload
+    die(f"herald-os {DOCS_USAGE}", 2)
+    return "", {}
+
+
+def sheets_request(args: list[str]) -> tuple[str, dict]:
+    """(command id, arguments) for `herald-os sheets ...` (pure; tested)."""
+    sub, rest = (args[0], args[1:]) if args else ("open", [])
+    words, flags = _office_words(rest, SHEETS_USAGE)
+    text = " ".join(words)
+    if sub == "open":
+        return "sheets.open", ({"path": _absolute(text)} if words else {})
+    if sub == "new":
+        payload: dict = {"name": text} if words else {}
+        if "template" in flags:
+            payload["template"] = str(flags["template"])
+        if "path" in flags:
+            payload["path"] = _absolute(str(flags["path"]))
+        return "sheets.new", payload
+    if sub == "list":
+        return "sheets.list", {}
+    payload = {"workbook": _office_ref(str(flags["workbook"]))} if "workbook" in flags else {}
+    if sub in ("save", "pdf", "undo", "redo") and words:
+        payload["workbook"] = _office_ref(text)
+    on_sheet = {"sheet": str(flags["sheet"])} if "sheet" in flags else {}
+    if sub == "read":
+        return "sheets.read", {**payload, **({"range": text} if words else {}), **on_sheet}
+    if sub == "find":
+        if not words:
+            die(f"herald-os {SHEETS_USAGE}", 2)
+        return "sheets.find", {**payload, "text": text, **on_sheet}
+    if sub == "write":
+        if len(words) < 2:
+            die(f"herald-os {SHEETS_USAGE}", 2)
+        rows = len(words) == 2 and words[1].lstrip().startswith("[")
+        values = _json_text(words[1], list, '[["Item", "Cost"], ["Rent", 1200]]') if rows else " ".join(words[1:])
+        return "sheets.write", {**payload, "range": words[0], "values": values, **on_sheet}
+    if sub == "fill":
+        if not words:
+            die(f"herald-os {SHEETS_USAGE}", 2)
+        payload["range"] = words[0]
+        if len(words) > 1:
+            payload["formula"] = " ".join(words[1:])
+        return "sheets.fill", {**payload, **on_sheet}
+    if sub == "format":
+        if len(words) != 2:
+            die(f"herald-os {SHEETS_USAGE}", 2)
+        return "sheets.format", {**payload, "range": words[0], "format": _json_text(words[1], dict, '{"bold": true, "numberFormat": "#,##0.00"}'), **on_sheet}
+    if sub == "sort":
+        if len(words) != 1 or "by" not in flags:
+            die(f"herald-os {SHEETS_USAGE}", 2)
+        payload.update({"range": words[0], "by": str(flags["by"])})
+        if flags.get("descending"):
+            payload["ascending"] = False
+        if flags.get("header"):
+            payload["header"] = True
+        return "sheets.sort", {**payload, **on_sheet}
+    if sub == "filter":
+        if flags.get("clear"):
+            return "sheets.filter", {**payload, "clear": True, **on_sheet}
+        if len(words) != 1 or "by" not in flags or ("values" not in flags and "condition" not in flags):
+            die(f"herald-os {SHEETS_USAGE}", 2)
+        payload.update({"range": words[0], "by": str(flags["by"])})
+        if "values" in flags:
+            payload["values"] = _json_text(str(flags["values"]), list, '["Paid", "Due"]')
+        if "condition" in flags:
+            payload["condition"] = _json_text(str(flags["condition"]), dict, '{"operator": "greaterThan", "value": 100}')
+        return "sheets.filter", {**payload, **on_sheet}
+    if sub == "freeze":
+        if not 1 <= len(words) <= 2:
+            die(f"herald-os {SHEETS_USAGE}", 2)
+        payload["rows"] = _count(words[0], SHEETS_USAGE)
+        if len(words) == 2:
+            payload["columns"] = _count(words[1], SHEETS_USAGE)
+        return "sheets.freeze", {**payload, **on_sheet}
+    if sub == "add-sheet":
+        if words:
+            payload["name"] = text
+        if "index" in flags:
+            payload["index"] = _count(flags["index"], SHEETS_USAGE)
+        return "sheets.addSheet", payload
+    if sub == "rename-sheet":
+        if len(words) != 2:
+            die(f"herald-os {SHEETS_USAGE}", 2)
+        return "sheets.renameSheet", {**payload, "sheet": words[0], "name": words[1]}
+    if sub == "remove-sheet":
+        if not words:
+            die(f"herald-os {SHEETS_USAGE}", 2)
+        return "sheets.removeSheet", {**payload, "sheet": text}
+    if sub == "replace":
+        if len(words) != 2:
+            die(f"herald-os {SHEETS_USAGE}", 2)
+        payload.update({"find": words[0], "replacement": words[1]})
+        if "range" in flags:
+            payload["range"] = str(flags["range"])
+        if flags.get("first"):
+            payload["all"] = False
+        return "sheets.replace", {**payload, **on_sheet}
+    if sub == "clean":
+        if len(words) != 2 or words[1] not in SHEETS_CLEAN_ACTIONS:
+            die(f"herald-os {SHEETS_USAGE}", 2)
+        payload.update({"range": words[0], "action": words[1]})
+        for flag, key in (("by", "by"), ("delimiter", "delimiter"), ("order", "order"), ("date-format", "dateFormat"), ("case", "case")):
+            if flag in flags:
+                payload[key] = str(flags[flag])
+        for key in ("header", "overwrite"):
+            if flags.get(key):
+                payload[key] = True
+        return "sheets.clean", {**payload, **on_sheet}
+    if sub in ("save", "pdf"):
+        if "to" in flags:
+            payload["to"] = _absolute(str(flags["to"]))
+        if flags.get("overwrite"):
+            payload["overwrite"] = True
+        return ("sheets.save" if sub == "save" else "sheets.exportPdf"), payload
+    if sub in ("undo", "redo"):
+        if "steps" in flags:
+            payload["steps"] = _count(flags["steps"], SHEETS_USAGE)
+        return f"sheets.{sub}", payload
+    die(f"herald-os {SHEETS_USAGE}", 2)
+    return "", {}
+
+
+def _shown(value: object) -> str:
+    """A cell as one field of a tab-separated line."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    return re.sub(r"[\t\r\n]+", " ", str(value))
+
+
+def _office_listing(documents: list, summary: str | None, quote: bool) -> None:
+    """One line per open document: * for the one in front, its file, unsaved edits and what is selected."""
+    for doc in documents:
+        selection = " ".join(str(doc.get("selection") or "").split())
+        if selection and quote:
+            selection = f"“{selection[:60]}…”" if len(selection) > 60 else f"“{selection}”"
+        print(f"{'*' if doc.get('active') else ' '} {doc.get('name')}  {doc.get('path') or 'not saved'}{'  (edited)' if doc.get('modified') else ''}{'  ' + selection if selection else ''}")
+    if not documents:
+        print(summary or "Nothing is open.")
+
+
+def docs_cmd(args: list[str]) -> int:
+    command, payload = docs_request(args)
+    reply = run_os_wait(command, payload, timeout=120)
+    data = reply.get("data") or {}
+    if "--json" in args:
+        print(json.dumps(data, indent=2))
+        return 0
+    if command == "docs.list":
+        _office_listing(data.get("documents") or [], reply.get("summary"), quote=True)
+        return 0
+    if command == "docs.read":
+        outline = data.get("outline") or []
+        for heading in outline:
+            print(f"{'  ' * (int(heading.get('level') or 1) - 1)}{heading.get('text')}")
+        body = data.get("content") if "content" in data else data.get("marked") or data.get("selection")
+        if body:
+            print(f"\n{body}" if outline else body)
+        elif not outline:
+            print(reply.get("summary") or "")
+        return 0
+    print(reply.get("summary") or "done")
+    return 0
+
+
+def sheets_cmd(args: list[str]) -> int:
+    command, payload = sheets_request(args)
+    reply = run_os_wait(command, payload, timeout=120)
+    data = reply.get("data") or {}
+    if "--json" in args:
+        print(json.dumps(data, indent=2))
+        return 0
+    if command == "sheets.list":
+        _office_listing(data.get("workbooks") or [], reply.get("summary"), quote=False)
+        return 0
+    if command == "sheets.read":
+        rows = data.get("text") or data.get("values") or []
+        for row in rows:
+            print("\t".join(_shown(cell) for cell in row))
+        if not rows:
+            print(reply.get("summary") or "")
+        elif data.get("truncated"):
+            print(reply.get("summary") or "", file=sys.stderr)
+        return 0
+    print(reply.get("summary") or "done")
+    return 0
+
+
+def slides_request(args: list[str]) -> tuple[str, dict]:
+    """(command id, arguments) for `herald-os slides ...` (pure; tested)."""
+    sub, rest = (args[0], args[1:]) if args else ("open", [])
+    # from-doc's --notes is a yes or no; elsewhere it takes the notes.
+    words, flags = _office_words(rest, SLIDES_USAGE, (*OFFICE_SWITCHES, "--notes") if sub == "from-doc" else OFFICE_SWITCHES)
+    text = " ".join(words)
+    if sub == "open":
+        return "slides.open", ({"path": _absolute(text)} if words else {})
+    if sub == "new":
+        payload: dict = {"name": text} if words else {}
+        for key in ("theme", "size"):
+            if key in flags:
+                payload[key] = str(flags[key])
+        if "path" in flags:
+            payload["path"] = _absolute(str(flags["path"]))
+        if "slides" in flags:
+            payload["slides"] = _json_text(_stdin_or(str(flags["slides"])), list, '[{"layout": "title", "title": "Q3 review"}, {"title": "Results", "body": "Revenue up 12%"}]')
+        return "slides.new", payload
+    if sub == "list":
+        return "slides.list", {}
+    payload = {"presentation": _office_ref(str(flags["presentation"]))} if "presentation" in flags else {}
+    if sub in ("read", "save", "pdf", "undo", "redo") and words:
+        payload["presentation"] = _office_ref(text)
+    on_slide = {"slide": str(flags["slide"])} if "slide" in flags else {}
+    if sub == "read":
+        return "slides.read", {**payload, **on_slide}
+    if sub == "add-slide":
+        payload.update({key: str(flags[key]) for key in ("layout", "notes", "after") if key in flags})
+        if words:
+            payload["title"] = text
+        if "body" in flags:
+            payload["body"] = _stdin_or(str(flags["body"]))
+        return "slides.addSlide", payload
+    if sub == "set-slide":
+        changes: dict = {key: str(flags[key]) for key in ("title", "notes", "layout", "background") if key in flags}
+        if "body" in flags:
+            changes["body"] = _stdin_or(str(flags["body"]))
+        if flags.get("hidden") or flags.get("shown"):
+            changes["hidden"] = bool(flags.get("hidden"))
+        if len(words) != 1 or not changes:
+            die(f"herald-os {SLIDES_USAGE}", 2)
+        return "slides.setSlide", {**payload, "slide": words[0], **changes}
+    if sub == "notes":
+        if len(words) < 2:
+            die(f"herald-os {SLIDES_USAGE}", 2)
+        return "slides.setSlide", {**payload, "slide": words[0], "notes": _stdin_or(" ".join(words[1:]))}
+    if sub == "move":
+        if len(words) != 2:
+            die(f"herald-os {SLIDES_USAGE}", 2)
+        return "slides.moveSlide", {**payload, "slide": words[0], "to": words[1]}
+    if sub == "remove":
+        if not words:
+            die(f"herald-os {SLIDES_USAGE}", 2)
+        return "slides.removeSlide", {**payload, "slide": text}
+    if sub == "theme":
+        if len(words) != 1:
+            die(f"herald-os {SLIDES_USAGE}", 2)
+        return "slides.setTheme", {**payload, "theme": words[0]}
+    if sub == "from-doc":
+        if words:
+            payload["document"] = _office_ref(text)
+        if "level" in flags:
+            payload["level"] = _count(flags["level"], SLIDES_USAGE)
+        if flags.get("notes"):
+            payload["notes"] = True
+        return "slides.fromDocument", payload
+    if sub == "insert-range":
+        if words:
+            payload["range"] = text
+        if "workbook" in flags:
+            payload["workbook"] = _office_ref(str(flags["workbook"]))
+        if "sheet" in flags:
+            payload["sheet"] = str(flags["sheet"])
+        return "slides.insertRange", {**payload, **on_slide}
+    if sub == "replace":
+        if len(words) != 2:
+            die(f"herald-os {SLIDES_USAGE}", 2)
+        payload.update({"find": words[0], "replacement": words[1]})
+        if flags.get("first"):
+            payload["all"] = False
+        return "slides.replace", payload
+    if sub in ("save", "pdf"):
+        if "to" in flags:
+            payload["to"] = _absolute(str(flags["to"]))
+        if flags.get("overwrite"):
+            payload["overwrite"] = True
+        return ("slides.save" if sub == "save" else "slides.exportPdf"), payload
+    if sub in ("undo", "redo"):
+        if "steps" in flags:
+            payload["steps"] = _count(flags["steps"], SLIDES_USAGE)
+        return f"slides.{sub}", payload
+    die(f"herald-os {SLIDES_USAGE}", 2)
+    return "", {}
+
+
+def slides_cmd(args: list[str]) -> int:
+    command, payload = slides_request(args)
+    reply = run_os_wait(command, payload, timeout=120)
+    data = reply.get("data") or {}
+    if "--json" in args:
+        print(json.dumps(data, indent=2))
+        return 0
+    if command == "slides.list":
+        _office_listing(data.get("presentations") or [], reply.get("summary"), quote=False)
+        return 0
+    if command == "slides.read":
+        for slide in data.get("slides") or []:
+            marks = [str(slide.get("layout")), *(["hidden"] if slide.get("hidden") else [])]
+            print(f"{'*' if slide.get('number') == data.get('front') else ' '}{str(slide.get('number')).rjust(3)}. {slide.get('title') or '(no title)'}  ({', '.join(marks)})")
+            for line in "\n".join(str(slide[key]) for key in ("body", "body2") if slide.get(key)).splitlines():
+                print(f"       {line}")
+            if slide.get("notes"):
+                print(f"       notes: {' '.join(str(slide['notes']).split())}")
+        if not data.get("slides"):
+            print(reply.get("summary") or "")
+        return 0
+    print(reply.get("summary") or "done")
+    return 0
+
+
+def signal_name(number: object) -> str:
+    try:
+        return signal.Signals(int(number)).name  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return str(number or "?")
+
+
+def coredumps() -> list[dict]:
+    if not shutil.which("coredumpctl"):
+        die("coredumpctl is not installed (it ships with systemd-coredump)", 127)
+    result = sh(["coredumpctl", "list", "--json=short", "--no-pager", "--since=-7d"], timeout=30)
+    try:
+        rows = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        rows = []
+    return sorted((r for r in rows if isinstance(r, dict)), key=lambda r: r.get("time") or 0, reverse=True)
+
+
+def crash(args: list[str]) -> int:
+    sub = args[0] if args else "list"
+    if sub == "list":
+        rows = coredumps()
+        if not rows:
+            print("No crashes in the last 7 days.")
+            return 0
+        for row in rows[:30]:
+            when = datetime.fromtimestamp(row["time"] / 1_000_000).strftime("%a %d %b %H:%M") if row.get("time") else "?"
+            print(f"{when:<16} {str(row.get('pid', '?')):>7}  {Path(str(row.get('exe') or '?')).name:<24} {signal_name(row.get('sig'))}")
+        return 0
+    if sub == "diagnose":
+        target = " ".join(args[1:]).strip()
+        if not target.isdigit():
+            return run_os("crash.diagnose", {"crash": target} if target else {})
+        row = next((r for r in coredumps() if str(r.get("pid")) == target), None)
+        details: dict = {"pid": int(target)}
+        if row:
+            details["app"] = Path(str(row.get("exe") or "")).name or None
+            details["reason"] = signal_name(row.get("sig"))
+            if row.get("time"):
+                details["at"] = datetime.fromtimestamp(row["time"] / 1_000_000).astimezone().isoformat()
+        return run_os("crash.diagnose", {k: v for k, v in details.items() if v})
+    if sub == "mute":
+        off = len(args) > 2 and args[-1] == "off"
+        name = " ".join(args[1:-1] if off else args[1:]).strip()
+        if not name:
+            die("crash mute <name> [off]", 2)
+        return run_os("crash.mute", {"app": name, "muted": not off})
+    die("crash list | crash diagnose [pid|name] | crash mute <name> [off]", 2)
+    return 2
+
+
+# ---------------------------------------------------------------------------------------------
+# System.
+def account_has_password() -> bool | None:
+    """True/False when it can be determined (needs passwordless sudo for `passwd -S`), else None."""
+    result = subprocess.run(["sudo", "-n", "passwd", "-S", os.environ.get("USER") or Path.home().name], capture_output=True, text=True)
+    if result.returncode != 0:
+        return None
+    fields = result.stdout.split()
+    return len(fields) > 1 and fields[1] == "P"
+
+
+def lock() -> int:
+    # A lock nobody can undo is worse than no lock: an account without a password (the default in
+    # the dev VM) would leave the compositor's session lock engaged with no way back in.
+    if account_has_password() is False:
+        notify("Lock skipped", "Set a password first: herald-os password")
+        return 1
+    if shutil.which("swaylock"):
+        cfg = HOME / ".config" / "swaylock" / "config"
+        return subprocess.call(lock_command(cfg if cfg.exists() else None, branding_lock_image()))
+    return subprocess.call(["loginctl", "lock-session"])
+
+
+BRANDING_DIR = CONFIG_DIR / "branding"
+BRANDING_USAGE = "branding [show] | branding set [--logo <image>] [--lock <image>] [--name <text>] | branding reset [all|logo|lock|name]"
+
+
+def branding_lock_image() -> Path | None:
+    """The lock-screen picture `herald-os branding set --lock` chose, while it is still there."""
+    try:
+        stored = json.loads((BRANDING_DIR / "branding.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    name = stored.get("lock") if isinstance(stored, dict) else None
+    if not isinstance(name, str) or not name or Path(name).name != name:
+        return None
+    image = BRANDING_DIR / name
+    return image if image.is_file() else None
+
+
+def lock_command(cfg: Path | None, image: Path | None) -> list[str]:
+    """swaylock's argv: the theme's config, and the branded picture behind the ring (pure; tested)."""
+    args = ["swaylock", "-f"] + (["-C", str(cfg)] if cfg else ["--color", "04113f"])
+    if image:
+        args += ["--image", str(image), "--scaling", "fill"]
+    return args
+
+
+def branding_patch(args: list[str], cwd: Path) -> dict:
+    """`branding set --logo <image> --lock <image> --name <text>` as a patch, paths made absolute (pure; tested)."""
+    flags = {"--logo": "logo", "--lock": "lock", "--name": "name"}
+    patch: dict = {}
+    pairs = list(zip(args[::2], args[1::2]))
+    if not args or len(args) % 2 or any(flag not in flags for flag, _ in pairs):
+        die(BRANDING_USAGE, 2)
+    for flag, value in pairs:
+        key = flags[flag]
+        patch[key] = value if key == "name" else str((cwd / Path(value).expanduser()).resolve())
+    return patch
+
+
+def branding_cmd(args: list[str]) -> int:
+    """About's logo and name and the lock-screen picture; the shell keeps them (the same as Settings > About)."""
+    action = args[0] if args else "show"
+    if action == "set":
+        reply = relay("branding", ["set", json.dumps(branding_patch(args[1:], Path.cwd()))])
+    elif action == "reset" and len(args) <= 2:
+        reply = relay("branding", ["reset", args[1] if len(args) > 1 else "all"])
+    elif action == "show" and len(args) <= 1:
+        reply = relay("branding", ["show"])
+    else:
+        die(BRANDING_USAGE, 2)
+    if not reply.get("ok"):
+        die(reply.get("error") or "the shell rejected the command", 1)
+    view = reply.get("branding") or {}
+    print(f"name:  {view.get('name') or '(none)'}")
+    print(f"logo:  {'yours' if view.get('logo') else 'the Herald logo'}")
+    print(f"lock:  {view.get('lock') or 'the theme colours'}")
+    return 0
+
+
+def password() -> int:
+    """Set (or change) the login password used by the lock screen; interactive by design."""
+    if not sys.stdin.isatty():
+        die("run `herald-os password` in a terminal", 2)
+    return subprocess.call(["passwd"])
+
+
+def suspend() -> int:
+    lock()
+    return subprocess.call(["systemctl", "suspend"])
+
+
+def update(check_only: bool) -> int:
+    updater = shutil.which("herald-os-update")
+    if updater:
+        return subprocess.call([updater] + (["--check"] if check_only else []))
+    print("herald-os-update is not installed; run linux/dev/build.sh in your Herald-OS checkout to install it.")
+    return 1
+
+
+SESSION_ENTRIES = (Path("/usr/share/wayland-sessions/herald-os.desktop"), Path("/usr/local/share/wayland-sessions/herald-os.desktop"))
+
+
+def session_hint() -> str:
+    """How to start Herald OS, from what this machine has: the login-screen entry and niri."""
+    listed = any(entry.exists() for entry in SESSION_ENTRIES)
+    if listed and shutil.which("niri"):
+        return "Start the full session from your login screen (Herald OS), or run herald-os-app inside your desktop."
+    if listed:
+        return "Run herald-os-app inside your desktop. The full session (Herald OS on your login screen) also needs niri."
+    return "Run herald-os-app inside your desktop. For the full session, install niri; then `sudo herald-os-tarball install` puts Herald OS on your login screen (docs/LINUX.md)."
+
+
+def debug() -> int:
+    def line(label: str, argv: list[str]) -> None:
+        try:
+            out = subprocess.run(argv, capture_output=True, text=True, timeout=5).stdout.strip().splitlines()
+            print(f"{label:<14} {out[0] if out else '-'}")
+        except Exception:  # noqa: BLE001
+            print(f"{label:<14} unavailable")
+
+    print("Herald OS debug")
+    line("os", ["sh", "-c", ". /etc/os-release && echo $PRETTY_NAME"])
+    line("kernel", ["uname", "-r"])
+    line("niri", ["niri", "--version"])
+    line("cage", ["cage", "-h"])
+    line("electron", ["sh", "-c", "pgrep -a electron | head -1"])
+    hermes = hermes_command()
+    line("hermes", [*hermes, "--version"] if hermes else ["echo", "missing"])
+    print(f"{'shell socket':<14} {'up' if SOCKET.exists() else 'down'} ({SOCKET})")
+    print(f"{'compositor':<14} {os.environ.get('HERALD_OS_COMPOSITOR', 'niri')} nested={os.environ.get('HERALD_OS_NIRI_NESTED', 'auto')}")
+    for name in ("shell.log", "compositor.log"):
+        path = STATE_DIR / name
+        if path.exists():
+            print(f"--- {name} (tail)")
+            print("\n".join(path.read_text(errors="replace").splitlines()[-8:]))
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------
+# Keymaps. Herald's niri config, ~/.config/niri/herald-os.kdl (the session starts niri with it), is
+# rendered from its template; a personal ~/.config/niri/config.kdl is never touched. The Omarchy keymap
+# makes Super+C, X and V copy, cut and paste in every app (terminals included, through Ctrl+Insert and
+# Shift+Insert), and moves the Herald binds they replace one modifier over.
+KEYMAP_FILE = CONFIG_DIR / "keymap"
+KEYMAPS = ("herald", "omarchy")
+NIRI_CONFIG = HOME / ".config" / "niri" / "herald-os.kdl"
+# The template that came with this command comes first: a checkout's, or the app's own when the
+# command is a link into /opt/herald-os (the Arch package, the release tarball). Copies installed
+# elsewhere (the image, the development VM) fall through to the folders after it.
+NIRI_TEMPLATES = [
+    Path(__file__).resolve().parent.parent / "niri" / "config.kdl",
+    HOME / "Herald-OS" / "linux" / "niri" / "config.kdl",
+    Path("/usr/local/share/herald-os-linux/niri/config.kdl"),
+    Path("/usr/share/herald-os/niri/config.kdl"),
+]
+OMARCHY_BINDS = {
+    "Mod+C": 'Mod+C hotkey-overlay-title="Copy" { spawn "wtype" "-M" "ctrl" "-k" "Insert" "-m" "ctrl"; }',
+    "Mod+X": 'Mod+X hotkey-overlay-title="Cut" { spawn "wtype" "-M" "ctrl" "x" "-m" "ctrl"; }',
+    "Mod+V": 'Mod+V hotkey-overlay-title="Paste" { spawn "wtype" "-M" "shift" "-k" "Insert" "-m" "shift"; }',
+}
+# Herald's own binds on those keys move here (both are free in the template).
+OMARCHY_MOVES = {"Mod+C": "Mod+Ctrl+C", "Mod+V": "Mod+Shift+V"}
+
+
+def current_keymap() -> str:
+    try:
+        name = KEYMAP_FILE.read_text().strip()
+    except OSError:
+        return "herald"
+    return name if name in KEYMAPS else "herald"
+
+
+def render_keymap(template: str, keymap: str) -> str:
+    """The niri config for a keymap: the template unchanged for Herald's keys, rewritten for Omarchy's."""
+    if keymap != "omarchy":
+        return template
+    out: list[str] = []
+    for line in template.splitlines():
+        stripped = line.lstrip()
+        key = stripped.split(" ", 1)[0]
+        indent = line[: len(line) - len(stripped)]
+        if key in OMARCHY_MOVES:
+            out.append(indent + OMARCHY_MOVES[key] + stripped[len(key):])
+            out.append(indent + OMARCHY_BINDS[key])
+            continue
+        out.append(line)
+        if stripped.startswith("binds {"):
+            out.append("    // Omarchy keymap (herald-os keymap herald switches back).")
+            out.append("    " + OMARCHY_BINDS["Mod+X"])
+    return "\n".join(out) + "\n"
+
+
+def keymap_cmd(args: list[str]) -> int:
+    action = args[0] if args else "show"
+    if action == "show":
+        print(current_keymap())
+        return 0
+    if action in KEYMAPS:
+        if action == "omarchy" and not shutil.which("wtype"):
+            die("the Omarchy keymap types copy and paste with wtype; install it first (sudo dnf install wtype)", 127)
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        KEYMAP_FILE.write_text(action + "\n")
+    elif action != "apply":
+        die("keymap show | herald | omarchy | apply", 2)
+    template = next((path for path in NIRI_TEMPLATES if path.is_file()), None)
+    if not template:
+        die("the niri template is missing; reinstall Herald OS or run herald-os-build")
+    rendered = render_keymap(template.read_text(), current_keymap())
+    # niri reloads on every write: only a changed config is written, once and atomically, so it
+    # never reads half a file.
+    if not NIRI_CONFIG.is_file() or NIRI_CONFIG.read_text(errors="replace") != rendered:
+        NIRI_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        staging = NIRI_CONFIG.with_suffix(".kdl.new")
+        staging.write_text(rendered)
+        staging.replace(NIRI_CONFIG)
+    if action != "apply":
+        print(f"keymap: {current_keymap()}" + (" (Super+C, X and V copy, cut and paste; voice moved to Super+Shift+V)" if current_keymap() == "omarchy" else ""))
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------
+# Per-user setup after installing the package: Hermes, and the bridge plugin that gives it the system.
+HERMES_HOME = Path(os.environ.get("HERMES_HOME") or HOME / ".hermes")
+BRIDGE_DIRS = [HOME / "Herald-OS" / "plugins" / "herald-os-bridge", Path("/usr/share/herald-os/bridge"), Path("/opt/herald-os/resources/herald-os-bridge")]
+HERMES_INSTALLER = "https://hermes-agent.nousresearch.com/install.sh"
+# On the Herald OS image: Hermes did not install at the first boot, and herald-os-hermes.service is
+# installing it (firstboot.sh). What is in it says how that goes.
+HERMES_PENDING = Path("/var/lib/herald-os/hermes-pending")
+
+
+def hermes_checkout(root: Path) -> list[str] | None:
+    """A Hermes Agent checkout's own command: the launcher today's installers publish in it
+    (.hermes/bin/hermes, which runs the Python and dependencies kept in ~/.hermes/tools and
+    ~/.hermes/installs) or the venv earlier ones made. The launcher first: an update to the new layout
+    leaves the old venv behind, unused. Only beside the `serve` subcommand the shell runs."""
+    if not (root / "hermes_cli" / "subcommands" / "dashboard.py").is_file():
+        return None
+    for command in (root / ".hermes" / "bin" / "hermes", root / "venv" / "bin" / "hermes"):
+        if command.is_file() and os.access(command, os.X_OK):
+            return [str(command)]
+    return None
+
+
+def hermes_install() -> tuple[str, list[str]] | None:
+    """How this account runs Hermes Agent, looked for the way the shell does
+    (apps/desktop/electron/backend/resolve.ts): HERALD_OS_HERMES_ROOT ("env"), then the checkout in
+    $HERMES_HOME/hermes-agent ("managed"), then `hermes` on the PATH or in ~/.local/bin ("path"),
+    where the installers put it and where the PATH of sudo and of systemd units does not look."""
+    override = (os.environ.get("HERALD_OS_HERMES_ROOT") or os.environ.get("HERMES_OS_HERMES_ROOT") or "").strip()
+    for kind, root in (("env", Path(override) if override else None), ("managed", HERMES_HOME / "hermes-agent")):
+        command = hermes_checkout(root) if root else None
+        if command:
+            return kind, command
+    found = shutil.which("hermes") or shutil.which("hermes", path=str(HOME / ".local" / "bin"))
+    return ("path", [found]) if found else None
+
+
+def hermes_command() -> list[str] | None:
+    install = hermes_install()
+    return install[1] if install else None
+
+
+TOOL_SEARCH = "tools.tool_search.enabled"
+# `hermes tools enable` reports an unknown toolset as a ✗ line and still exits 0.
+HERMES_ERROR = re.compile(r"^\s*✗", re.M)
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def tool_search_before() -> Path:
+    """Every Herald OS setup (this command, the app's first start, scripts/bootstrap.sh) writes the value
+    it found here before turning Tool Search off, and only the first time, so `setup --undo` can put it back."""
+    return HERMES_HOME / "herald-os" / "tool-search-before"
+
+
+def hermes_run(hermes: list[str], args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run([*hermes, *args], stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, env={**os.environ, "NO_COLOR": "1"})
+
+
+def hermes_step(hermes: list[str], args: list[str], change: str, gone: str | None = None) -> None:
+    """Run one `hermes` command and say what it changes; a failure stops here with Hermes's output.
+    Output matching `gone` means there was nothing left to change."""
+    command = "hermes " + " ".join(args)
+    print(f"==> {command}: {change}")
+    result = hermes_run(hermes, args)
+    output = ANSI.sub("", f"{result.stdout or ''}\n{result.stderr or ''}").strip()
+    if gone and re.search(gone, output):
+        print("    nothing to change")
+        return
+    if result.returncode != 0 or HERMES_ERROR.search(output):
+        die(f"`{command}` failed (exit {result.returncode}){': ' + output if output else ''}\nRun herald-os setup again once it is fixed, or herald-os setup --undo to take back what was already changed.", 1)
+
+
+def hermes_value(hermes: list[str], key: str) -> str:
+    """A setting as `hermes config get` prints it, which `hermes config set` reads back unchanged."""
+    result = hermes_run(hermes, ["config", "get", key])
+    lines = [line.strip() for line in ANSI.sub("", result.stdout or "").splitlines() if line.strip()]
+    if result.returncode != 0 or not lines:
+        die(f"`hermes config get {key}` failed (exit {result.returncode}): {(result.stderr or result.stdout or '').strip()}", 1)
+    return lines[-1]
+
+
+def enable_bridge(hermes: list[str]) -> None:
+    """User plugins are opt-in and a saved toolset list is authoritative, so both are recorded. Tool
+    Search would hide plugin tools behind a lookup, and it has no per-plugin switch (ADR-010)."""
+    hermes_step(hermes, ["plugins", "enable", "herald-os-bridge"], f"adds it to plugins.enabled in {HERMES_HOME / 'config.yaml'}")
+    hermes_step(hermes, ["tools", "enable", "herald_os"], "saves platform_toolsets.cli with herald_os in it (Herald OS's sessions share that list with the hermes CLI; the tools run only in Herald OS sessions)")
+    before, record = hermes_value(hermes, TOOL_SEARCH), tool_search_before()
+    if before == "off":
+        print(f"==> {TOOL_SEARCH} is off already")
+        return
+    if not record.exists():
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(before + "\n")
+    hermes_step(hermes, ["config", "set", TOOL_SEARCH, "off"], f"turns Tool Search off for every Hermes session, so the system tools stay directly callable (it was {before}; saved in {record}, and Settings > Hermes & agents > Tool search turns it back on)")
+
+
+def setup_undo() -> int:
+    """Take back what setup changed in Hermes: the toolset, the plugin, Tool Search and the link."""
+    hermes = hermes_command()
+    link = HERMES_HOME / "plugins" / "herald-os-bridge"
+    if hermes:
+        # Hermes knows the toolset only while the plugin is linked and enabled, so it goes first.
+        hermes_step(hermes, ["tools", "disable", "herald_os"], "takes herald_os out of platform_toolsets.cli", gone="Unknown toolset")
+        hermes_step(hermes, ["plugins", "disable", "herald-os-bridge"], "moves it from plugins.enabled to plugins.disabled", gone="No plugin named")
+        restore_tool_search(hermes)
+    else:
+        print("Hermes Agent is not installed, so only the plugin link is removed.")
+    if link.is_symlink():
+        link.unlink()
+        print(f"==> removed the plugin link {link}")
+    elif link.exists():
+        print(f"==> {link} is a folder Herald OS did not make; left alone")
+    # The app turns the bridge on at its first start unless this marker says that happened already.
+    marker = HERMES_HOME / "herald-os" / "bridge-enabled"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+    print("Herald OS no longer changes your Hermes; `herald-os setup` makes the changes again.")
+    return 0
+
+
+def restore_tool_search(hermes: list[str]) -> None:
+    current, record = hermes_value(hermes, TOOL_SEARCH), tool_search_before()
+    if current != "off":
+        print(f"==> {TOOL_SEARCH} is {current}, not off; left as it is")
+    elif record.exists():
+        before = record.read_text().strip()
+        hermes_step(hermes, ["config", "set", TOOL_SEARCH, before], f"back to {before}, its value before Herald OS")
+    else:
+        # Setups before the record existed turned it off without one; Hermes's default is the likely value.
+        hermes_step(hermes, ["config", "set", TOOL_SEARCH, "auto"], f"back to Hermes's default, auto (Herald OS kept no record of the value before; hermes config set {TOOL_SEARCH} off if you had it off yourself)")
+    record.unlink(missing_ok=True)
+
+
+def setup(args: list[str]) -> int:
+    """Link the bridge plugin into Hermes, turn on its tools, and install Hermes if it is missing."""
+    if args[:1] == ["--undo"]:
+        return setup_undo()
+    if args[:1] == ["fingerprint"]:
+        return setup_sign_in("fingerprint")
+    if args[:1] == ["fido2"]:
+        return setup_sign_in("fido2")
+    assume_yes = "--yes" in args or "-y" in args
+    bridge = next((d for d in BRIDGE_DIRS if (d / "plugin.yaml").exists()), None)
+    if not bridge:
+        die("the herald-os-bridge plugin is missing; reinstall Herald OS", 1)
+    hermes = hermes_command()
+    if not hermes:
+        if HERMES_PENDING.exists():
+            # A second installer in the same checkout would race the one already at work.
+            status = HERMES_PENDING.read_text().strip() or "pending"
+            die(f"Hermes Agent is not installed yet. herald-os-hermes.service installs it once this computer is online, then sets it up ({status} now): `journalctl -u herald-os-hermes -f` follows it, `sudo systemctl restart herald-os-hermes` tries again at once", 1)
+        print(f"Hermes Agent is not installed. Herald OS runs on it; the installer is {HERMES_INSTALLER}")
+        if not assume_yes:
+            if not sys.stdin.isatty():
+                die("`herald-os setup --yes` installs it and then sets it up (in a terminal, `herald-os setup` asks first)", 1)
+            if input("Install Hermes Agent now? [Y/n] ").strip().lower() not in ("", "y", "yes"):
+                die("run `herald-os setup` again once Hermes is installed", 1)
+        code = subprocess.call(["bash", "-c", f"curl -fsSL {HERMES_INSTALLER} | bash"])
+        hermes = hermes_command()
+        if code != 0 or not hermes:
+            die("the Hermes installer did not finish; see its output above", 1)
+    plugins = HERMES_HOME / "plugins"
+    plugins.mkdir(parents=True, exist_ok=True)
+    link = plugins / "herald-os-bridge"
+    if link.is_symlink():
+        link.unlink()
+    elif link.exists():
+        die(f"{link} exists and is not a link Herald OS made; move it aside and run setup again", 1)
+    link.symlink_to(bridge)
+    print(f"==> bridge plugin: {link} -> {bridge}")
+    enable_bridge(hermes)
+    print("==> Hermes can now use the system (files, apps, settings), asking before anything that changes it")
+    print("    To take these changes back: herald-os setup --undo")
+    if is_omarchy():
+        print("Omarchy: `herald-os omarchy install` adds Herald OS to its menu, theme and keys.")
+    print(session_hint())
+    return 0
+
+
+def setup_sign_in(kind: str) -> int:
+    """Fingerprint (fprintd) or a security key (pam-u2f) for the lock screen and sudo."""
+    if not sys.stdin.isatty():
+        die(f"setup {kind} needs a terminal: you touch the sensor or the key while it runs", 2)
+    # Omarchy has its own setup for both, which also covers its lock screen and polkit (Omarchy 4's
+    # name first, then Omarchy 3's).
+    if is_omarchy():
+        names = ("omarchy-setup-security-fingerprint", "omarchy-setup-fingerprint") if kind == "fingerprint" else ("omarchy-setup-security-fido2", "omarchy-setup-fido2")
+        tool = next((found for found in map(omarchy_tool, names) if found), None)
+        if tool:
+            return subprocess.call([tool])
+    if kind == "fingerprint":
+        if not shutil.which("fprintd-enroll"):
+            die("fprintd is not installed (sudo dnf install fprintd fprintd-pam, or pacman -S fprintd)", 127)
+        print("Touch the fingerprint sensor several times when asked.")
+        code = subprocess.call(["fprintd-enroll"])
+        feature, pam = "with-fingerprint", "auth sufficient pam_fprintd.so"
+    else:
+        if not shutil.which("pamu2fcfg"):
+            die("pam-u2f is not installed (sudo dnf install pam-u2f pamu2fcfg, or pacman -S pam-u2f)", 127)
+        keys = HOME / ".config" / "Yubico" / "u2f_keys"
+        keys.parent.mkdir(parents=True, exist_ok=True)
+        print("Touch your security key when it blinks.")
+        registration = subprocess.run(["pamu2fcfg"], capture_output=True, text=True)
+        if registration.returncode != 0 or not registration.stdout.strip():
+            die(registration.stderr.strip() or "the key did not register", 1)
+        # One line per user; a second key appends its credential to the same line.
+        line = registration.stdout.strip()
+        existing = keys.read_text().strip() if keys.exists() else ""
+        keys.write_text((existing + line[line.index(":"):] if existing.startswith(line.split(":", 1)[0] + ":") else line) + "\n")
+        keys.chmod(0o600)
+        code = 0
+        feature, pam = "with-pam-u2f", "auth sufficient pam_u2f.so cue"
+    if code != 0:
+        return code
+    what = "fingerprint" if kind == "fingerprint" else "security key"
+    if shutil.which("authselect"):
+        # Fedora: one switch turns it on for the lock screen, sudo and the login screen.
+        code = subprocess.call(["sudo", "authselect", "enable-feature", feature])
+        if code == 0:
+            print(f"Done: the lock screen and sudo accept your {what} as well as your password.")
+        return code
+    # Arch: the line goes into sudo and Herald's lock screen (swaylock), with a backup of every
+    # file it changes. hyprlock does fingerprints itself and is left alone.
+    changed = [file for file in PAM_FILES if Path(file).exists() and pam_enable(Path(file), pam)]
+    if not any(Path(file).exists() for file in PAM_FILES):
+        die(f"none of {', '.join(PAM_FILES)} exist; add this line to your PAM config yourself:\n  {pam}", 1)
+    print(f"Done: sudo and the lock screen accept your {what} as well as your password." + (f" (changed {', '.join(changed)}; a .herald-os.bak copy sits next to each)" if changed else " (already set up)"))
+    return 0
+
+
+PAM_FILES = ("/etc/pam.d/sudo", "/etc/pam.d/swaylock")
+
+
+def pam_with(text: str, line: str) -> str | None:
+    """`text` with `line` as its first auth rule, or None when it is already there (pure; tested)."""
+    rules = text.splitlines()
+    if any(rule.split() == line.split() for rule in rules):
+        return None
+    at = next((i for i, rule in enumerate(rules) if rule.split()[:1] == ["auth"]), None)
+    if at is None:
+        # No auth rules of its own (only includes): after the header and comments.
+        at = next((i for i, rule in enumerate(rules) if rule.strip() and not rule.lstrip().startswith("#")), len(rules))
+    return "\n".join([*rules[:at], line, *rules[at:]]) + "\n"
+
+
+def pam_enable(file: Path, line: str) -> bool:
+    """Put `line` first in a PAM file through sudo, keeping a backup; False when it was already there."""
+    updated = pam_with(file.read_text(), line)
+    if updated is None:
+        return False
+    backup = Path(f"{file}.herald-os.bak")
+    if not backup.exists():
+        subprocess.run(["sudo", "cp", "-p", str(file), str(backup)], check=True)
+    subprocess.run(["sudo", "tee", str(file)], input=updated, text=True, stdout=subprocess.DEVNULL, check=True)
+    return True
+
+
+OSTREE_BOOTED = Path("/run/ostree-booted")
+OS_RELEASES = (Path("/etc/os-release"), Path("/usr/lib/os-release"))
+IMAGE_SHELL = Path("/usr/share/herald-os/app/resources/app.asar")
+
+
+def is_image() -> bool:
+    """The Herald OS image (bootc): updates replace the whole system and can be undone. Another bootc
+    or ostree system (Silverblue, Bazzite, Bluefin) is the person's own, and never gets bootc from here."""
+    if not OSTREE_BOOTED.exists():
+        return False
+    for path in OS_RELEASES:
+        try:
+            lines = path.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        if any(line.strip() in ("IMAGE_ID=herald-os", 'IMAGE_ID="herald-os"') for line in lines):
+            return True
+    # Images built before os-release named them: only the image puts the shell under /usr/share.
+    return IMAGE_SHELL.is_file()
+
+
+def image_switch(channel: str) -> int:
+    """Follow the image tag for a channel (stable for releases, edge for main)."""
+    status = sh(["sudo", "bootc", "status", "--format", "json"], timeout=60)
+    try:
+        current = json.loads(status.stdout)["spec"]["image"]["image"]
+    except (ValueError, KeyError, TypeError):
+        current = "ghcr.io/iamlukethedev/herald-os:stable"
+    target = current.rsplit(":", 1)[0] + f":{channel}"
+    if target == current:
+        return 0
+    print(f"==> following {target}")
+    return subprocess.call(["sudo", "bootc", "switch", target])
+
+
+def rollback() -> int:
+    if not is_image():
+        # A release tarball keeps the version its last update replaced in /opt/herald-os.previous.
+        tarball = shutil.which("herald-os-tarball")
+        if tarball and Path("/opt/herald-os.previous/resources/app.asar").is_file():
+            return subprocess.call(["sudo", *([] if sys.stdin.isatty() else ["-n"]), tarball, "rollback"])
+        die("rollback is for the Herald OS image and the release tarball; on this system, use your package manager's history", 2)
+    code = subprocess.call(["sudo", "bootc", "rollback"])
+    if code == 0:
+        notify("Rollback ready", "Restart to use the previous version of Herald OS; this one stays in the boot menu.")
+    return code
+
+
+def firmware(args: list[str]) -> int:
+    if not shutil.which("fwupdmgr"):
+        die("fwupd is not installed (sudo dnf install fwupd)", 127)
+    action = args[0] if args else "check"
+    subprocess.call(["fwupdmgr", "refresh", "--force"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if action == "check":
+        result = sh(["fwupdmgr", "get-updates", "--json"], timeout=120)
+        try:
+            devices = [d for d in json.loads(result.stdout or "{}").get("Devices", []) if d.get("Releases")]
+        except ValueError:
+            devices = []
+        if not devices:
+            print("Firmware is up to date")
+            return 0
+        for device in devices:
+            print(f"{device.get('Name')}: {device['Releases'][0].get('Version')} available")
+        return 0
+    if action == "update":
+        # Some updates apply on the next restart; fwupd says which.
+        return subprocess.call(["fwupdmgr", "update", "--assume-yes", "--no-reboot-check"])
+    die("firmware [check|update]", 2)
+    return 2
+
+
+RESET_HELPER = Path("/usr/libexec/herald-os/reset-helper")
+
+
+def reset(args: list[str]) -> int:
+    if not RESET_HELPER.exists():
+        die("reset is for the Herald OS image", 2)
+    if not sys.stdin.isatty():
+        die("reset needs a terminal: it asks you to confirm and for your password", 2)
+    user = os.environ.get("USER", "")
+    print(f"This erases {user}'s files, apps and settings on this computer, then restarts into setup.")
+    print("Herald OS itself stays. Back up anything you want to keep first.")
+    if input("Type ERASE to continue: ").strip() != "ERASE":
+        print("Nothing was changed.")
+        return 1
+    return subprocess.call(["sudo", str(RESET_HELPER), "schedule", user])
+
+
+# ---------------------------------------------------------------------------------------------
+# Omarchy: Herald OS as an app inside it (herald-os-app), wearing Omarchy's theme, in its menu, on
+# its own keys. Herald never overwrites a file Omarchy or the person owns: it adds one marked line
+# to theirs, or prints what to add. Omarchy 4 (Lua Hyprland config, its menu JSONC, state under
+# ~/.local/state) and Omarchy 3 (hyprland.conf, ~/.config/omarchy/current) are both handled.
+OMARCHY_SHARE = HOME / ".local" / "share" / "omarchy"
+OMARCHY_PACKAGE = Path("/usr/share/omarchy")
+OMARCHY_HOOKS = HOME / ".config" / "omarchy" / "hooks"
+OMARCHY_MENU = HOME / ".config" / "omarchy" / "extensions" / "omarchy-menu.jsonc"
+# Where the active theme is linked: Omarchy 4, then Omarchy 3.
+OMARCHY_CURRENT = (HOME / ".local" / "state" / "omarchy" / "current", HOME / ".config" / "omarchy" / "current")
+HYPR_DIR = HOME / ".config" / "hypr"
+HERALD_HYPR = HYPR_DIR / "herald-os.conf"
+HYPR_SOURCE = "source = ~/.config/hypr/herald-os.conf  # herald-os"
+HERALD_HYPR_LUA = HYPR_DIR / "herald-os.lua"
+HYPR_REQUIRE = 'require("hypr.herald-os")  -- herald-os'
+APP_DESKTOP = APPS_DIR / "herald-os-app.desktop"
+THEME_HOOK = "#!/bin/sh\n# Herald OS follows the Omarchy theme (herald-os omarchy remove takes this out).\nexec herald-os theme omarchy >/dev/null 2>&1\n"
+HOOK_DISPATCHER = (
+    "#!/bin/sh\n# herald-os: runs every hook in theme-set.d with the theme's name.\n"
+    'for hook in "$(dirname "$0")"/theme-set.d/*; do [ -x "$hook" ] && "$hook" "$@"; done\n'
+)
+# Omarchy's menu parser drops whole-line // comments only: a comment after a row breaks the whole file.
+MENU_MARK = "  // Herald OS (herald-os omarchy remove takes it out):"
+MENU_LINE = '  "herald-os": {"icon": "󰚩", "label": "Herald OS", "action": "herald-os-app", "description": "Hermes as your desktop"},'
+HYPR_LUA_BINDS = """-- Herald OS (written by `herald-os omarchy install`; `herald-os omarchy remove` takes it out).
+o.bind("SUPER + ALT + H", "Herald OS", "herald-os-app")
+o.bind("SUPER + ALT + A", "Ask Hermes about this window", "herald-os ask")
+o.bind("SUPER + ALT + C", "Hermes command bar", "herald-os command")
+o.bind("SUPER + ALT + V", "Talk to Hermes", "herald-os voice")
+o.bind("SUPER + ALT + X", "Dictate into the focused app", "herald-os dictate")
+o.bind("SUPER + ALT + E", "Emoji", "herald-os emoji")
+o.bind("SUPER + ALT + M", "Hermes missions", "herald-os page missions")
+"""
+HYPR_BINDS = """# Herald OS (written by `herald-os omarchy install`; `herald-os omarchy remove` takes it out).
+# Super+Alt+H, then: Return opens Herald OS, A asks about this window, C opens the command bar,
+# V talks to Hermes, X dictates into the focused app, E picks an emoji, M shows Missions.
+bindd = SUPER ALT, H, Herald OS keys, submap, herald
+submap = herald
+bindd = , Return, Open Herald OS, exec, herald-os-app
+bindd = , A, Ask Hermes about this window, exec, herald-os ask
+bindd = , C, Hermes command bar, exec, herald-os command
+bindd = , V, Talk to Hermes, exec, herald-os voice
+bindd = , X, Dictate into the focused app, exec, herald-os dictate
+bindd = , E, Emoji, exec, herald-os emoji
+bindd = , M, Missions, exec, herald-os page missions
+"""
+HYPR_BINDS += "".join(f"bind = , {key}, submap, reset\n" for key in ("Return", "A", "C", "V", "X", "E", "M", "escape"))
+HYPR_BINDS += "submap = reset\n"
+
+
+def omarchy_root() -> Path | None:
+    """Omarchy itself: $OMARCHY_PATH, Omarchy 4's package (/usr/share/omarchy), or Omarchy 3's checkout."""
+    roots = [Path(os.environ["OMARCHY_PATH"])] if os.environ.get("OMARCHY_PATH") else []
+    return next((root for root in (*roots, OMARCHY_PACKAGE, OMARCHY_SHARE) if (root / "bin").is_dir() or (root / "themes").is_dir()), None)
+
+
+def is_omarchy() -> bool:
+    return omarchy_root() is not None
+
+
+def omarchy_app_mode() -> bool:
+    """Herald runs inside Omarchy (Hyprland), not as its own niri session."""
+    return is_omarchy() and compositor() == "hyprland"
+
+
+def omarchy_tool(name: str) -> str | None:
+    root = omarchy_root()
+    return shutil.which(name) or (str(root / "bin" / name) if root and (root / "bin" / name).exists() else None)
+
+
+def omarchy_current_theme() -> str:
+    """The active theme's name: Omarchy 4 stages a copy as current/theme and writes the name beside
+    it in theme.name; Omarchy 3 links the theme's own folder as current/theme."""
+    for base in OMARCHY_CURRENT:
+        if (base / "theme").exists():
+            named = base / "theme.name"
+            name = named.read_text(errors="replace").strip() if named.is_file() else ""
+            return name or (base / "theme").resolve().name
+    return ""
+
+
+def omarchy_theme(sub: str, name: str) -> int:
+    if sub == "set":
+        tool = omarchy_tool("omarchy-theme-set")
+        if not tool:
+            die("omarchy-theme-set is missing; set the theme from Omarchy's menu", 127)
+        return subprocess.call([tool, name])
+    if sub == "current":
+        print(omarchy_current_theme())
+        return 0
+    root = omarchy_root()
+    for base in (HOME / ".config" / "omarchy" / "themes", *([root / "themes"] if root else [])):
+        if base.is_dir():
+            for theme in sorted(p.name for p in base.iterdir() if p.is_dir()):
+                print(theme)
+    return 0
+
+
+def omarchy_runs_hook_dirs() -> bool:
+    """Omarchy 4's omarchy-hook runs hooks/<name>.d/ itself; Omarchy 3 ran only hooks/<name>."""
+    tool = omarchy_tool("omarchy-hook")
+    try:
+        return bool(tool) and ".d" in Path(tool).read_text(errors="replace")
+    except OSError:
+        return False
+
+
+def split_jsonc_comment(line: str) -> tuple[str, str]:
+    """A JSONC line as (code, // comment), ignoring // inside strings (pure)."""
+    quoted = False
+    for i, char in enumerate(line):
+        if char == '"' and (i == 0 or line[i - 1] != "\\"):
+            quoted = not quoted
+        elif not quoted and line.startswith("//", i):
+            return line[:i], line[i:]
+    return line, ""
+
+
+def menu_with_herald(text: str) -> str | None:
+    """Omarchy 4's menu JSONC (an object of dotted ids) with Herald's row added before its closing
+    brace, or None when it is already there or the file is not such an object (pure; tested)."""
+    if '"herald-os"' in text:
+        return None
+    lines = text.rstrip().splitlines()
+    close = len(lines) - 1
+    if close < 0 or split_jsonc_comment(lines[close])[0].strip() != "}" or split_jsonc_comment(lines[0])[0].strip()[:1] not in ("{", ""):
+        return None
+    # The entry before ours needs its comma.
+    previous = next((i for i in range(close - 1, -1, -1) if split_jsonc_comment(lines[i])[0].strip()), None)
+    if previous is not None:
+        code, comment = split_jsonc_comment(lines[previous])
+        if not code.rstrip().endswith((",", "{")):
+            lines[previous] = code.rstrip() + "," + (f"  {comment}" if comment else "")
+    return "\n".join([*lines[:close], MENU_MARK, MENU_LINE, *lines[close:]]) + "\n"
+
+
+def menu_without_herald(text: str) -> str:
+    """The menu JSONC with Herald's row taken out again (pure; tested)."""
+    ours = (MENU_MARK.strip(), MENU_LINE.strip())
+    return "\n".join(line for line in text.splitlines() if line.strip() not in ours) + "\n"
+
+
+def without_line(text: str, line: str) -> str:
+    return "\n".join(existing for existing in text.splitlines() if existing.strip() != line).rstrip("\n") + "\n"
+
+
+def omarchy_status() -> dict[str, bool]:
+    lua, conf = HYPR_DIR / "hyprland.lua", HYPR_DIR / "hyprland.conf"
+    lua_keys = HERALD_HYPR_LUA.exists() and lua.exists() and HYPR_REQUIRE in lua.read_text(errors="replace")
+    conf_keys = HERALD_HYPR.exists() and conf.exists() and HYPR_SOURCE in conf.read_text(errors="replace")
+    status = {
+        "app entry": APP_DESKTOP.exists(),
+        "theme hook": (OMARCHY_HOOKS / "theme-set.d" / "herald-os").exists(),
+        "keys": lua_keys or conf_keys,
+    }
+    # Only Omarchy 4 has a menu Herald can add to.
+    if OMARCHY_MENU.exists():
+        status["menu entry"] = '"herald-os"' in OMARCHY_MENU.read_text(errors="replace")
+    return status
+
+
+def omarchy_install() -> int:
+    if not is_omarchy():
+        die("this is not an Omarchy install (no /usr/share/omarchy or ~/.local/share/omarchy)", 1)
+    notes: list[str] = []
+    APPS_DIR.mkdir(parents=True, exist_ok=True)
+    APP_DESKTOP.write_text(
+        "[Desktop Entry]\nName=Herald OS\nComment=The AI-native desktop, as an app\nExec=herald-os-app\n"
+        "Icon=herald-os\nType=Application\nCategories=System;Utility;\nTerminal=false\nStartupWMClass=herald-os\n"
+    )
+    # Theme hook: Omarchy runs theme-set.d itself on 4; on 3 a small dispatcher does.
+    hooks = OMARCHY_HOOKS / "theme-set.d"
+    hooks.mkdir(parents=True, exist_ok=True)
+    (hooks / "herald-os").write_text(THEME_HOOK)
+    (hooks / "herald-os").chmod(0o755)
+    dispatcher = OMARCHY_HOOKS / "theme-set"
+    if omarchy_runs_hook_dirs():
+        if dispatcher.exists() and dispatcher.read_text(errors="replace") == HOOK_DISPATCHER:
+            dispatcher.unlink()
+    elif not dispatcher.exists():
+        dispatcher.write_text(HOOK_DISPATCHER)
+        dispatcher.chmod(0o755)
+    elif "theme-set.d" not in dispatcher.read_text(errors="replace"):
+        notes.append(f'Your {dispatcher} hook exists; add this line so Herald follows themes:\n  for hook in ~/.config/omarchy/hooks/theme-set.d/*; do [ -x "$hook" ] && "$hook" "$@"; done')
+    # The menu: Omarchy 4's JSONC extensions (Omarchy 3 had none; Applications lists Herald there).
+    if OMARCHY_MENU.exists():
+        updated = menu_with_herald(OMARCHY_MENU.read_text(errors="replace"))
+        if updated is not None:
+            OMARCHY_MENU.write_text(updated)
+        elif '"herald-os"' not in OMARCHY_MENU.read_text(errors="replace"):
+            notes.append(f"Add this row to {OMARCHY_MENU}:\n{MENU_LINE}")
+    # Keys: Lua on Omarchy 4, hyprland.conf on Omarchy 3.
+    HYPR_DIR.mkdir(parents=True, exist_ok=True)
+    lua, conf = HYPR_DIR / "hyprland.lua", HYPR_DIR / "hyprland.conf"
+    if lua.exists():
+        HERALD_HYPR_LUA.write_text(HYPR_LUA_BINDS)
+        if HYPR_REQUIRE not in lua.read_text(errors="replace"):
+            with lua.open("a") as handle:
+                handle.write(f"\n{HYPR_REQUIRE}\n")
+        keys = "Super+Alt+H"
+    elif conf.exists():
+        HERALD_HYPR.write_text(HYPR_BINDS)
+        if HYPR_SOURCE not in conf.read_text(errors="replace"):
+            with conf.open("a") as handle:
+                handle.write(f"\n{HYPR_SOURCE}\n")
+        keys = "Super+Alt+H then Return"
+    else:
+        keys = "Applications"
+        notes.append(f"No Hyprland config in {HYPR_DIR}; Herald's keys were not added.")
+    relay("theme-omarchy", [], quiet=True)
+    print(f"Herald OS is set up inside Omarchy: open it from the Omarchy menu, Applications or {keys}.")
+    for note in notes:
+        print(note)
+    return 0
+
+
+def omarchy_remove() -> int:
+    for path in (APP_DESKTOP, OMARCHY_HOOKS / "theme-set.d" / "herald-os", HERALD_HYPR, HERALD_HYPR_LUA):
+        path.unlink(missing_ok=True)
+    dispatcher = OMARCHY_HOOKS / "theme-set"
+    if dispatcher.exists() and dispatcher.read_text(errors="replace") == HOOK_DISPATCHER:
+        dispatcher.unlink()
+    if OMARCHY_MENU.exists():
+        text = OMARCHY_MENU.read_text(errors="replace")
+        if text.startswith("// Added by Herald OS"):
+            # An earlier Herald OS wrote this whole file.
+            OMARCHY_MENU.unlink()
+        elif MENU_LINE.strip() in text or MENU_MARK.strip() in text:
+            OMARCHY_MENU.write_text(menu_without_herald(text))
+    for config, line in ((HYPR_DIR / "hyprland.conf", HYPR_SOURCE), (HYPR_DIR / "hyprland.lua", HYPR_REQUIRE)):
+        if config.exists() and line in config.read_text(errors="replace"):
+            config.write_text(without_line(config.read_text(errors="replace"), line))
+    print("Herald OS is out of Omarchy's theme hook, menu and keys.")
+    return 0
+
+
+def omarchy_cmd(args: list[str]) -> int:
+    action = args[0] if args else "status"
+    if action == "install":
+        return omarchy_install()
+    if action == "remove":
+        return omarchy_remove()
+    if action == "status":
+        if not is_omarchy():
+            print("not Omarchy")
+            return 1
+        for name, done in omarchy_status().items():
+            print(f"{name:<11} {'yes' if done else 'no'}")
+        return 0
+    die("omarchy install | remove | status", 2)
+    return 2
+
+
+# ---------------------------------------------------------------------------------------------
+BAR_USAGE = (
+    "bar [list] | bar show|hide <item> | bar move <item> first|last|<n>|before <item>|after <item> "
+    "| bar clock [12h|24h|system] [seconds|no-seconds] [date short|long|none] | bar reset"
+)
+
+
+def bar_args(args: list[str]) -> tuple[str, dict]:
+    """`herald-os bar …` as a registry command and its arguments (pure; tested)."""
+    action = args[0] if args else "list"
+    rest = args[1:]
+    if action == "list" and not rest:
+        return "bar.layout", {}
+    if action in ("show", "hide") and len(rest) == 1:
+        return f"bar.{action}", {"item": rest[0]}
+    if action == "move" and len(rest) == 3 and rest[1] in ("before", "after"):
+        return "bar.move", {"item": rest[0], rest[1]: rest[2]}
+    if action == "move" and len(rest) == 2 and (rest[1] in ("first", "last") or rest[1].isdigit()):
+        return "bar.move", {"item": rest[0], "position": rest[1]}
+    if action == "clock" and rest:
+        clock: dict = {}
+        tokens = [token.lower() for token in rest]
+        while tokens:
+            token = tokens.pop(0)
+            if token in ("12h", "12", "24h", "24", "system"):
+                clock["hours"] = token.removesuffix("h")
+            elif token in ("seconds", "no-seconds"):
+                clock["seconds"] = token == "seconds"
+            elif token == "date" and tokens and tokens[0] in ("short", "long", "none"):
+                clock["date"] = tokens.pop(0)
+            else:
+                die(BAR_USAGE, 2)
+        return "bar.clock", clock
+    if action == "reset" and not rest:
+        return "bar.reset", {}
+    die(BAR_USAGE, 2)
+    return "", {}
+
+
+def bar_cmd(args: list[str]) -> int:
+    """The menu bar's items and clock, through the shell's registry (the same commands as Settings)."""
+    command, payload = bar_args(args)
+    reply = run_os_wait(command, payload)
+    if command != "bar.layout":
+        print(reply.get("summary") or "done")
+        return 0
+    data = reply.get("data") or {}
+    for item in data.get("items", []):
+        state = "pinned" if item.get("pinned") else "shown" if item.get("shown") else "hidden"
+        print(f"  {item.get('id', '?'):<14} {state:<7} {item.get('label', '')}")
+    clock = data.get("clock") or {}
+    print(f"  clock: {clock.get('hours', 'system')} hours, seconds {'on' if clock.get('seconds') else 'off'}, date {clock.get('date', 'short')}")
+    return 0
+
+
+def menu_check() -> int:
+    """What the control menu makes of ~/.config/herald-os/menu.json (your own entries)."""
+    reply = relay("menu-check", [])
+    if not reply.get("ok"):
+        die(reply.get("error") or "the shell rejected the command", 1)
+    entries = reply.get("entries", [])
+    print(f"{reply.get('file', 'menu.json')}: {len(entries)} {'entry' if len(entries) == 1 else 'entries'}")
+    for entry in entries:
+        print(f"  {entry.get('group', 'yours'):<9} {entry.get('kind', ''):<10} {entry.get('label', '')}")
+    for problem in reply.get("errors", []):
+        print(f"  problem: {problem}")
+    return 1 if reply.get("errors") else 0
+
+
+PLUGIN_ACTIONS = ("list", "add", "enable", "disable", "update", "remove")
+
+
+def plugin_cmd(args: list[str]) -> int:
+    """Widget plugins (ADR-019), through the running shell so Settings > Plugins sees the same state."""
+    action = args[0] if args else "list"
+    target = args[1] if len(args) > 1 else ""
+    if action == "dir":
+        print(CONFIG_DIR / "plugins")
+        return 0
+    if action not in PLUGIN_ACTIONS or (action != "list" and not target):
+        die("plugin list [--json] | plugin add <git-url> | plugin enable|disable|update|remove <id> | plugin dir", 2)
+    if action == "enable":
+        # The person turns a plugin on after reading what it may do; scripts and agents cannot.
+        listing = relay("plugin", ["list"])
+        found = next((plugin for plugin in listing.get("plugins", []) if plugin.get("id") == target), None)
+        if not found:
+            die(f"no plugin {target!r} (herald-os plugin list)", 1)
+        if found.get("errors"):
+            die(f"{target} cannot load: " + "; ".join(found["errors"]), 1)
+        if not sys.stdin.isatty():
+            die("turning a plugin on asks you first; run this in a terminal, or use Settings > Plugins", 2)
+        print(f"Turn on {found.get('name') or target}? It will be able to:")
+        for line in found.get("grants", []):
+            print(f"  - {line}")
+        if input("Turn it on? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("left off")
+            return 1
+    reply = relay("plugin", [action, target], timeout=180 if action in ("add", "update") else 15)
+    if not reply.get("ok"):
+        die(reply.get("error") or "the shell rejected the command", 1)
+    if action == "list":
+        plugins = reply.get("plugins", [])
+        if "--json" in args:
+            print(json.dumps(plugins, indent=2))
+            return 0
+        if not plugins:
+            print(f"no plugins (herald-os plugin add <git-url>, or make a folder in {CONFIG_DIR / 'plugins'})")
+        for plugin in plugins:
+            state = "broken" if plugin.get("errors") else "on" if plugin.get("enabled") else "off"
+            print(f"  {plugin.get('id', '?'):<24} {state:<7} {', '.join(plugin.get('placement', [])):<20} {plugin.get('name', '')}")
+        return 0
+    if action in ("add", "update"):
+        plugin = reply.get("plugin", {})
+        name = f"{plugin.get('name') or target} {plugin.get('version', '')}".strip()
+        print(f"{name} installed, turned off (herald-os plugin enable {plugin.get('id', '')})" if action == "add" else f"{name} updated")
+        return 0
+    print(f"{target}: {action}d")
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] in {"-h", "--help", "help"}:
+        print(__doc__.strip())
+        return 0
+    cmd, args = argv[0], argv[1:]
+    if cmd == "commands":
+        if "--json" in args:
+            print(json.dumps([{"name": k, "help": v} for k, v in COMMANDS.items()], indent=2))
+        else:
+            width = max(len(k) for k in COMMANDS)
+            for name, text in COMMANDS.items():
+                print(f"  {name.ljust(width)}  {text}")
+        return 0
+    if cmd not in COMMANDS:
+        die(f"unknown command {cmd!r} (see `herald-os commands`)", 2)
+
+    if cmd == "channel":
+        marker = CONFIG_DIR / "channel"
+        if args:
+            if args[0] not in ("stable", "edge"):
+                die("channel stable|edge", 2)
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            marker.write_text(args[0] + "\n")
+            if is_image() and image_switch(args[0]) != 0:
+                die("could not switch the image's channel (bootc switch)", 1)
+        print(marker.read_text().strip() if marker.exists() else "stable")
+        return 0
+    if cmd == "rollback":
+        return rollback()
+    if cmd == "firmware":
+        return firmware(args)
+    if cmd == "reset":
+        return reset(args)
+    if cmd == "omakase":
+        tool = shutil.which("herald-os-omakase")
+        if not tool:
+            die("herald-os-omakase is not installed", 127)
+        return subprocess.call([tool, *(args or ["install"])])
+    if cmd == "menu" and args[:1] == ["check"]:
+        return menu_check()
+    if cmd == "hermes-command":
+        install = hermes_install()
+        if not install or ("--managed" in args and install[0] != "managed"):
+            return 1
+        print("\n".join(install[1]))
+        return 0
+    if cmd in OVERLAY or cmd in {"page", "open", "launch", "notify", "voice", "dictate", "state", "update-available", "panel"}:
+        reply = relay(cmd, args)
+        if cmd == "state":
+            print(json.dumps(reply, indent=2))
+        if not reply.get("ok", False):
+            die(reply.get("error") or "the shell rejected the command", 1)
+        return 0
+    if cmd == "install":
+        if len(args) >= 2 and args[0] == "app":
+            return install_app(" ".join(args[1:]))
+        if len(args) >= 3 and args[0] == "webapp":
+            return install_webapp(args[1], args[2], args[3] if len(args) > 3 else None)
+        if args and args[0] not in ("app", "webapp"):
+            return catalog(["install", *args])
+        die("install <catalog-id> | install app <name> | install webapp <name> <url> [icon-url]", 2)
+    if cmd == "remove":
+        if len(args) >= 2 and args[0] == "app":
+            return remove_app(" ".join(args[1:]))
+        if len(args) >= 2 and args[0] == "webapp":
+            return remove_webapp(" ".join(args[1:]))
+        if args and args[0] not in ("app", "webapp"):
+            return catalog(["remove", *args])
+        die("remove <catalog-id> | remove app <name> | remove webapp <name>", 2)
+    if cmd == "catalog":
+        return catalog(args or ["list"])
+    if cmd == "windows":
+        return catalog(["windows", *args])
+    if cmd == "webapp-open":
+        if len(args) < 2:
+            die("webapp-open <url> <name>", 2)
+        return webapp_open(args[0], " ".join(args[1:]))
+    if cmd == "update":
+        return update("--check" in args)
+    if cmd == "theme":
+        sub = args[0] if args else "current"
+        if sub == "omarchy":
+            # Omarchy's theme-set hook: Herald's colours follow Omarchy's theme.
+            reply = relay("theme-omarchy", [], quiet=True)
+            if not reply.get("ok"):
+                die(reply.get("error") or "the Herald OS shell is not running", 1)
+            print(reply.get("theme", ""))
+            return 0
+        if omarchy_app_mode() and sub in ("list", "current", "set"):
+            # Inside Omarchy, Omarchy owns themes; Herald follows through the hook.
+            return omarchy_theme(sub, " ".join(args[1:]))
+        if sub == "list":
+            return theme_list()
+        if sub == "current":
+            return theme_current()
+        if sub == "set":
+            return theme_set(" ".join(args[1:]))
+        if sub == "install" and len(args) == 2:
+            return theme_install(args[1])
+        if sub == "new" and len(args) >= 2:
+            image = Path(args[1]).expanduser().resolve()
+            if not image.is_file():
+                die(f"no such image: {args[1]}", 1)
+            return run_os("theme.generate", {"image": str(image), **({"name": " ".join(args[2:])} if len(args) > 2 else {})})
+        die("theme list | theme set <name> | theme current | theme new <image> [name] | theme install <git-url>", 2)
+    if cmd == "font":
+        return font(args)
+    if cmd == "wallpaper":
+        return wallpaper(args[0] if args else "default")
+    if cmd == "reminder":
+        return reminder(args)
+    if cmd == "notice":
+        return notice(args[0] if args else "")
+    if cmd == "screenshot":
+        return screenshot()
+    if cmd == "capture":
+        return capture(args)
+    if cmd == "ocr":
+        return ocr()
+    if cmd == "crash":
+        return crash(args)
+    if cmd == "toggle":
+        return toggle(args)
+    if cmd == "screensaver":
+        reply = relay("screensaver", [])
+        return 0 if reply.get("ok") else 1
+    if cmd == "idle":
+        return idle_cmd(args)
+    if cmd == "keymap":
+        return keymap_cmd(args)
+    if cmd == "plugin":
+        return plugin_cmd(args)
+    if cmd == "bar":
+        return bar_cmd(args)
+    if cmd == "branding":
+        return branding_cmd(args)
+    if cmd == "weather":
+        return weather_cmd(args)
+    if cmd == "omarchy":
+        return omarchy_cmd(args)
+    if cmd == "setup":
+        return setup(args)
+    if cmd == "event":
+        return event_cmd(args)
+    if cmd == "hook":
+        return hook_cmd(args)
+    if cmd == "canvas":
+        return canvas_cmd(args)
+    if cmd == "docs":
+        return docs_cmd(args)
+    if cmd == "sheets":
+        return sheets_cmd(args)
+    if cmd == "slides":
+        return slides_cmd(args)
+    if cmd == "os":
+        if not args:
+            die("os <command.id> [json args]", 2)
+        try:
+            payload = json.loads(args[1]) if len(args) > 1 else {}
+        except json.JSONDecodeError:
+            die("os: the arguments must be a JSON object", 2)
+        return run_os(args[0], payload if isinstance(payload, dict) else {})
+    if cmd == "lock":
+        return lock()
+    if cmd == "password":
+        return password()
+    if cmd == "suspend":
+        return suspend()
+    if cmd == "wm":
+        if not args:
+            die("wm needs an action (niri's names, mapped to dispatchers on Hyprland)", 2)
+        return wm(*args)
+    if cmd == "debug":
+        return debug()
+    die(f"{cmd} is not implemented", 2)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

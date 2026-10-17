@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# The session's idle chain: screensaver, lock, screens off and sleep after the timings in
+# ~/.config/herald-os/idle.conf (seconds; Herald OS writes it from Settings). Runs swayidle as the
+# transient user unit herald-os-idle, so "stay awake" is simply that unit stopped.
+#
+#   herald-os-idle start | stop | restart | status
+set -euo pipefail
+
+CONF="${HERALD_OS_IDLE_CONF:-$HOME/.config/herald-os/idle.conf}"
+UNIT=herald-os-idle
+
+value() {
+  local key="$1" fallback="$2" line
+  line="$(grep -E "^${key}=[0-9]+$" "$CONF" 2>/dev/null | tail -n 1 || true)"
+  echo "${line#*=}" | grep -E '^[0-9]+$' || echo "$fallback"
+}
+
+start() {
+  command -v swayidle >/dev/null || { echo "swayidle is not installed" >&2; exit 127; }
+  local screensaver lock screen_off suspend args=()
+  screensaver="$(value screensaver 0)"
+  lock="$(value lock "${HERALD_OS_LOCK_AFTER:-600}")"
+  screen_off="$(value screen_off "${HERALD_OS_SCREEN_OFF_AFTER:-900}")"
+  suspend="$(value suspend 0)"
+
+  if (( screensaver > 0 )); then
+    args+=(timeout "$screensaver" 'herald-os screensaver')
+  fi
+  # Only arm the idle lock when the account can actually be unlocked (it has a password);
+  # otherwise the compositor would stay locked with no way back in.
+  if (( lock > 0 )) && sudo -n passwd -S "$USER" 2>/dev/null | awk '{exit ($2 == "P") ? 0 : 1}'; then
+    args+=(timeout "$lock" 'herald-os lock' before-sleep 'herald-os lock')
+  fi
+  if (( screen_off > 0 )); then
+    args+=(timeout "$screen_off" 'niri msg action power-off-monitors' resume 'niri msg action power-on-monitors')
+  fi
+  if (( suspend > 0 )); then
+    args+=(timeout "$suspend" 'systemctl suspend')
+  fi
+  (( ${#args[@]} > 0 )) || { echo "every idle timing is off"; return 0; }
+
+  systemctl --user stop "$UNIT" 2>/dev/null || true
+  systemd-run --user --quiet --collect --unit="$UNIT" \
+    --setenv=WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" --setenv=NIRI_SOCKET="${NIRI_SOCKET:-}" \
+    swayidle -w "${args[@]}"
+}
+
+case "${1:-status}" in
+  start | restart) start ;;
+  stop) systemctl --user stop "$UNIT" 2>/dev/null || true ;;
+  status) systemctl --user is-active "$UNIT" ;;
+  *)
+    echo "usage: herald-os-idle start | stop | restart | status" >&2
+    exit 2
+    ;;
+esac

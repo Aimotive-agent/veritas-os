@@ -1,0 +1,294 @@
+#!/usr/bin/env bash
+# Update Herald OS: the shell (repo + rebuild, or a newer release tarball in /opt/herald-os), one-shot
+# migrations, system packages (dnf on Fedora, pacman and the AUR helper on Arch, Omarchy's own updater
+# on Omarchy, the whole image with bootc on the Herald OS image), Flatpaks and Hermes Agent. `--check`
+# only reports and records whether anything is pending (the menu bar shows a dot). Channels
+# (~/.config/herald-os/channel): stable (default) or edge. A checkout tracks the repo's main branch on
+# both; a release tarball follows releases, with pre-releases on edge.
+#
+#   herald-os-update [--check] [--migrate] [--no-system] [--no-hermes]
+#
+# `--migrate` only runs pending one-shot migrations (linux/dev/build.sh calls it after every build).
+set -uo pipefail
+
+REPO="${HERALD_OS_REPO:-$HOME/Herald-OS}"
+STATE="$HOME/.local/state/herald-os"
+CONFIG="$HOME/.config/herald-os"
+CHANNEL="$(cat "$CONFIG/channel" 2>/dev/null || echo stable)"
+MIGRATIONS_DONE="/var/lib/herald-os/migrations"
+# What tells the Herald OS image from other bootc and ostree systems (is_herald_image).
+OSTREE_BOOTED=/run/ostree-booted
+OS_RELEASE=(/etc/os-release /usr/lib/os-release)
+IMAGE_SHELL=/usr/share/herald-os/app/resources/app.asar
+CHECK=0
+MIGRATE=0
+SYSTEM=1
+HERMES=1
+for arg in "$@"; do
+  case "$arg" in
+    --check) CHECK=1 ;;
+    --migrate) MIGRATE=1 ;;
+    --no-system) SYSTEM=0 ;;
+    --no-hermes) HERMES=0 ;;
+    *) echo "unknown option $arg" >&2; exit 2 ;;
+  esac
+done
+mkdir -p "$STATE" "$CONFIG"
+
+branch_for_channel() {
+  case "$CHANNEL" in
+    edge) echo main ;;
+    *) echo main ;;
+  esac
+}
+
+notify() { herald-os notify "$1" "${2:-}" >/dev/null 2>&1 || true; }
+report() { herald-os update-available "$1" "$2" >/dev/null 2>&1 || true; }
+
+# The Herald OS image: a booted bootc image whose os-release says IMAGE_ID=herald-os (or, built before
+# that line, with the shell in /usr/share/herald-os/app, where only the image puts it).
+is_herald_image() {
+  [[ -e "$OSTREE_BOOTED" ]] || return 1
+  grep -qsxE 'IMAGE_ID="?herald-os"?' "${OS_RELEASE[@]}" || [[ -f "$IMAGE_SHELL" ]]
+}
+
+# What updates the system underneath: Omarchy refuses a bare `pacman -Syu` (it updates its own
+# configs alongside), and the image is replaced as a whole, never package by package. Another bootc
+# or ostree image (Silverblue, Bazzite, Bluefin) is the person's own system and its own tools update it.
+system_kind() {
+  if is_herald_image; then
+    echo image
+  elif [[ -e "$OSTREE_BOOTED" ]]; then
+    echo ostree
+  elif command -v omarchy-update >/dev/null || [[ -x "$HOME/.local/share/omarchy/bin/omarchy-update" ]]; then
+    echo omarchy
+  elif command -v pacman >/dev/null; then
+    echo pacman
+  elif command -v dnf >/dev/null; then
+    echo dnf
+  else
+    echo none
+  fi
+}
+SYSTEM_KIND="$(system_kind)"
+AUR_HELPER="$(command -v yay || command -v paru || true)"
+
+# Pending system updates (a count; the image counts as one).
+count_system_updates() {
+  local out rc
+  case "$SYSTEM_KIND" in
+    dnf)
+      # check-update exits 100 when updates exist.
+      out="$(dnf -q check-update 2>/dev/null)"
+      rc=$?
+      if [[ $rc -eq 100 ]]; then
+        echo "$out" | grep -cE '^[[:alnum:]]' || true
+      else
+        echo 0
+      fi
+      ;;
+    pacman | omarchy)
+      local repo=0 aur=0
+      command -v checkupdates >/dev/null && repo="$(checkupdates 2>/dev/null | grep -c . || true)"
+      [[ -n "$AUR_HELPER" ]] && aur="$("$AUR_HELPER" -Qua 2>/dev/null | grep -c . || true)"
+      echo $((repo + aur))
+      ;;
+    image)
+      command -v bootc >/dev/null && sudo -n bootc upgrade --check 2>/dev/null | grep -qi 'update available' && echo 1 || echo 0
+      ;;
+    *) echo 0 ;;
+  esac
+}
+
+update_system() {
+  case "$SYSTEM_KIND" in
+    dnf) sudo -n dnf -y -q upgrade ;;
+    pacman)
+      if [[ -n "$AUR_HELPER" ]]; then
+        "$AUR_HELPER" -Syu --noconfirm
+      else
+        sudo -n pacman -Syu --noconfirm
+      fi
+      ;;
+    omarchy)
+      local updater
+      updater="$(command -v omarchy-update || echo "$HOME/.local/share/omarchy/bin/omarchy-update")"
+      if [[ -t 0 ]]; then
+        "$updater"
+      else
+        # Omarchy's updater asks questions; from the menu it belongs in Omarchy's own flow.
+        echo "Omarchy updates the system itself: run omarchy-update (or Update in Omarchy's menu)."
+        notify "System updates go through Omarchy" "Run Update from Omarchy's menu; Herald OS updated its own parts."
+      fi
+      ;;
+    image)
+      # Stages the new image; it boots on the next restart and the old one stays in the boot menu.
+      sudo -n bootc upgrade
+      ;;
+    ostree)
+      echo "This is not the Herald OS image, so the system is left to its own updates (its software center, rpm-ostree upgrade or bootc upgrade)."
+      ;;
+    *) return 0 ;;
+  esac
+}
+
+# One-shot migrations, tracked by file name so each runs exactly once per machine. Appends failures
+# to `failed`.
+failed=()
+run_migrations() {
+  # A checkout's migrations, the ones that came with this command (a link into /opt/herald-os), or the
+  # installed package's (/usr/share/herald-os/migrations).
+  local dir="$REPO/linux/migrations"
+  [[ -d "$dir" ]] || dir="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../migrations"
+  [[ -d "$dir" ]] || dir=/usr/share/herald-os/migrations
+  [[ -d "$dir" ]] || return 0
+  sudo -n mkdir -p "$MIGRATIONS_DONE"
+  local migration name
+  for migration in "$dir"/*.sh; do
+    [[ -f "$migration" ]] || continue
+    name="$(basename "$migration")"
+    [[ -f "$MIGRATIONS_DONE/$name" ]] && continue
+    echo "==> migration $name"
+    if REPO="$REPO" bash "$migration"; then
+      sudo -n touch "$MIGRATIONS_DONE/$name"
+    else
+      failed+=("migration:$name")
+    fi
+  done
+}
+
+if [[ $MIGRATE -eq 1 ]]; then
+  run_migrations
+  [[ ${#failed[@]} -eq 0 ]] || { echo "failed: ${failed[*]}" >&2; exit 1; }
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------------------------
+# The shell from a checkout, which the session runs once it is built (linux/dev/build.sh). A clone
+# that was never built, such as the one the Arch package is made from, is not pulled or built here.
+pending_repo=0
+repo_remote=""
+if [[ -d "$REPO/.git" && -f "$REPO/apps/desktop/dist/electron/main.mjs" ]]; then
+  branch="$(branch_for_channel)"
+  if git -C "$REPO" remote get-url origin >/dev/null 2>&1; then
+    repo_remote="origin/$branch"
+    git -C "$REPO" fetch --quiet origin "$branch" 2>/dev/null || echo "WARNING: could not fetch $repo_remote"
+    ahead="$(git -C "$REPO" rev-list --count "HEAD..$repo_remote" 2>/dev/null || echo 0)"
+    [[ "$ahead" -gt 0 ]] && pending_repo=$ahead
+  fi
+elif [[ -d "$REPO/apps/desktop" && ! -d "$REPO/.git" ]]; then
+  echo "repo at $REPO has no .git (pushed from a Mac): shell updates arrive with linux/dev/push.sh"
+fi
+
+# The shell from the release tarball in /opt/herald-os (not a package's): a newer release replaces it
+# once its checksum matches, and the version it replaces stays for `herald-os rollback`.
+pending_tarball=0
+tarball_version=""
+TARBALL="$(command -v herald-os-tarball || true)"
+if [[ -n "$TARBALL" ]]; then
+  tarball_version="$("$TARBALL" check --channel "$CHANNEL")"
+  case $? in
+    0) pending_tarball=1 ;;
+    3) echo "WARNING: could not check for a newer Herald OS release" ;;
+  esac
+fi
+
+pending_pkgs=0
+if [[ $SYSTEM -eq 1 ]]; then
+  pending_pkgs="$(count_system_updates)"
+fi
+
+pending_flatpaks=0
+if [[ $SYSTEM -eq 1 ]] && command -v flatpak >/dev/null; then
+  pending_flatpaks="$(flatpak remote-ls --user --updates --columns=application flathub 2>/dev/null | grep -c . || true)"
+fi
+
+plural() { [[ $1 -eq 1 ]] && echo "$1 $2" || echo "$1 ${2}s"; }
+
+if [[ $CHECK -eq 1 ]]; then
+  total=$((pending_repo + pending_tarball + pending_pkgs + pending_flatpaks))
+  # What the menu bar shows, e.g. "Herald OS, 192 packages, 3 apps".
+  parts=()
+  [[ $pending_repo -gt 0 ]] && parts+=("Herald OS")
+  [[ $pending_tarball -gt 0 ]] && parts+=("Herald OS $tarball_version")
+  [[ $pending_pkgs -gt 0 ]] && parts+=("$(plural "$pending_pkgs" package)")
+  [[ $pending_flatpaks -gt 0 ]] && parts+=("$(plural "$pending_flatpaks" app)")
+  summary="up to date"
+  if [[ ${#parts[@]} -gt 0 ]]; then
+    summary="$(printf '%s, ' "${parts[@]}")"
+    summary="${summary%, }"
+  fi
+  printf '{"channel":"%s","checkedAt":"%s","pending":%d,"shell":%d,"packages":%d,"flatpaks":%d}\n' \
+    "$CHANNEL" "$(date -Is)" "$total" "$((pending_repo + pending_tarball))" "$pending_pkgs" "$pending_flatpaks" >"$STATE/update-available.json"
+  echo "$summary"
+  report "$total" "$summary"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------------------------
+echo "==> Herald OS update ($CHANNEL)"
+notify "Updating Herald OS" "This can take a few minutes."
+
+if [[ -n "$repo_remote" && $pending_repo -gt 0 ]]; then
+  echo "==> shell: pulling $repo_remote"
+  git -C "$REPO" pull --ff-only --quiet origin "$(branch_for_channel)" || failed+=(shell)
+fi
+
+# Before the migrations, so that the new version's migrations run in the same update.
+if [[ $pending_tarball -eq 1 ]]; then
+  echo "==> Herald OS $tarball_version (the release tarball in /opt/herald-os)"
+  if [[ -t 0 ]]; then
+    sudo "$TARBALL" update "$tarball_version" || failed+=(herald-os)
+  elif ! sudo -n "$TARBALL" update "$tarball_version"; then
+    echo "Herald OS $tarball_version did not install; in a terminal, herald-os update can ask for your password."
+    failed+=(herald-os)
+  fi
+fi
+
+run_migrations
+
+if [[ $SYSTEM -eq 1 ]]; then
+  echo "==> system ($SYSTEM_KIND)"
+  update_system || failed+=(packages)
+  if command -v flatpak >/dev/null; then
+    echo "==> flatpaks"
+    flatpak update -y --noninteractive --user >/dev/null || failed+=(flatpaks)
+  fi
+fi
+
+if [[ $HERMES -eq 1 ]]; then
+  # The checkout in ~/.hermes/hermes-agent, in whichever layout its installer left; a Hermes that
+  # came from another installer is that installer's to update.
+  mapfile -t hermes < <(herald-os hermes-command --managed 2>/dev/null)
+  if [[ ${#hermes[@]} -gt 0 ]]; then
+    echo "==> Hermes Agent"
+    "${hermes[@]}" update </dev/null >/dev/null 2>&1 || echo "WARNING: hermes update did not complete (run it in a terminal)"
+  fi
+fi
+
+if [[ -x "$REPO/linux/dev/build.sh" && ( $pending_repo -gt 0 || -n "${HERALD_OS_FORCE_REBUILD:-}" ) ]]; then
+  echo "==> rebuilding the shell"
+  bash "$REPO/linux/dev/build.sh" || failed+=(build)
+fi
+
+printf '{"channel":"%s","checkedAt":"%s","pending":0,"shell":0,"packages":0,"flatpaks":0}\n' "$CHANNEL" "$(date -Is)" >"$STATE/update-available.json"
+report 0 "up to date"
+
+# Hooks in ~/.config/herald-os/hooks/after-update.d/ and "after Herald OS updates" automations.
+if command -v herald-os >/dev/null; then
+  herald-os event after-update "problems=${failed[*]:-none}" >/dev/null 2>&1 || true
+fi
+
+if [[ ${#failed[@]} -gt 0 ]]; then
+  notify "Update finished with problems" "${failed[*]}"
+  echo "failed: ${failed[*]}" >&2
+  exit 1
+fi
+if [[ $pending_tarball -eq 1 ]]; then
+  notify "Herald OS $tarball_version is installed" "Log out and back in (or restart herald-os-app) to use it."
+else
+  notify "Herald OS is up to date" "Restart the shell to use the new build."
+fi
+if [[ $pending_repo -gt 0 ]]; then
+  herald-os-restart-shell >/dev/null 2>&1 || true
+fi

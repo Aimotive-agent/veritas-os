@@ -1,0 +1,16 @@
+{
+  "id": "windows",
+  "label": "Windows",
+  "order": 6,
+  "description": "Windows in a virtual machine, for the apps that only run there.",
+  "entries": [
+    {
+      "id": "windows",
+      "label": "Windows 11",
+      "description": "A Windows 11 VM in a container (dockur/windows under Podman), with a shared folder and a Remote Desktop launcher. Asks for memory, cores and disk.",
+      "arch": ["x86_64"],
+      "needs": ["kvm"],
+      "install": [{ "kind": "script", "ref": "windows" }]
+    }
+  ]
+}

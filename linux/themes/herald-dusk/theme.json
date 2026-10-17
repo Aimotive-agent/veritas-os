@@ -1,0 +1,50 @@
+{
+  "name": "herald-dusk",
+  "label": "Herald Dusk",
+  "description": "Twilight violet with a soft lilac accent.",
+  "shell": {
+    "scheme": "dark"
+  },
+  "wallpaper": "default",
+  "colors": {
+    "bg": "#120c1c",
+    "bg2": "#1f1430",
+    "surface": "#251939",
+    "fg": "#f1eafa",
+    "fg_dim": "#ab9dc4",
+    "accent": "#c77dff",
+    "accent_strong": "#d89bff",
+    "border_inactive": "#34274b",
+    "border_active": "#c77dff",
+    "urgent": "#ff6b6b",
+    "ok": "#5fd39a",
+    "warn": "#f2c25e"
+  },
+  "gtk": {
+    "color_scheme": "prefer-dark",
+    "theme": "Adwaita-dark"
+  },
+  "terminal": {
+    "background": "#120c1c",
+    "foreground": "#f1eafa",
+    "cursor": "#d89bff",
+    "palette": [
+      "#3a3444",
+      "#dc6a6a",
+      "#6adc90",
+      "#dcc06a",
+      "#6a9adc",
+      "#c96adc",
+      "#6ad3dc",
+      "#dbd4e4",
+      "#676070",
+      "#ed9797",
+      "#97edb4",
+      "#edd797",
+      "#97bbed",
+      "#de97ed",
+      "#97e6ed",
+      "#ffffff"
+    ]
+  }
+}

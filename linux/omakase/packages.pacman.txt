@@ -1,0 +1,27 @@
+# Herald OS omakase: the same set as packages.txt, by Arch Linux's names. One per line; # comments.
+# Browsers, files, text.
+firefox
+nautilus
+gnome-text-editor
+# Documents and media.
+libreoffice-fresh
+loupe
+papers
+gnome-calculator
+gnome-calendar
+vlc
+# Developer tools (the terminal is Herald OS's own).
+git
+github-cli
+ripgrep
+fd
+fzf
+zoxide
+btop
+lazygit
+tmux
+neovim
+# Fonts.
+ttf-jetbrains-mono
+noto-fonts
+noto-fonts-emoji

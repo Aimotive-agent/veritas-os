@@ -1,0 +1,2 @@
+# Kernel arguments for every Herald OS image boot: the splash instead of scrolling text.
+kargs = ["rhgb", "quiet", "plymouth.ignore-serial-consoles"]

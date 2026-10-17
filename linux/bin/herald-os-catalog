@@ -1,0 +1,847 @@
+#!/usr/bin/env python3
+"""Herald OS install catalog: the software the control menu, Settings, Hermes and `herald-os install <id>` offer.
+
+  herald-os-catalog list [--json] [--group <id>]
+  herald-os-catalog install <id> [--ram <GB>] [--cpus <n>] [--disk <GB>]
+  herald-os-catalog remove <id> [--purge]
+  herald-os-catalog status <id>
+  herald-os-catalog pkg manager | pkg install|remove|has|available <name>...   (the package layer the other scripts share)
+  herald-os-catalog windows start|stop|status|connect|remove [--purge]
+
+The catalog is linux/catalog/*.json. Each entry lists install methods in order of preference
+(flatpak, dnf, pacman, aur, npm, mise, script, webapp, link); the first one this machine can use
+wins, so one catalog serves Fedora, Arch and Omarchy, and the bootc image (Flatpak and ~/.local only).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import platform
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+HOME = Path.home()
+LOCAL = HOME / ".local"
+APPS_DIR = LOCAL / "share" / "applications"
+MISE_DATA = LOCAL / "share" / "mise"
+CONFIG_DIR = HOME / ".config" / "herald-os"
+# The catalog that came with this command comes first: a checkout's linux/catalog, or the app's
+# resources/catalog when the command is a link into it (/opt/herald-os: the Arch package, the release
+# tarball). Copies installed elsewhere (the image, the development VM) use the folders after it.
+_SOURCE = Path(__file__).resolve().parent.parent
+CATALOG_DIRS = [
+    Path(os.environ["HERALD_OS_CATALOG_DIR"]) if os.environ.get("HERALD_OS_CATALOG_DIR") else None,
+    (_SOURCE.parent if _SOURCE.name == "herald-os-linux" else _SOURCE) / "catalog",
+    HOME / "Herald-OS" / "linux" / "catalog",
+    Path("/usr/local/share/herald-os-linux/catalog"),
+    Path("/usr/share/herald-os/catalog"),
+    Path("/opt/herald-os/resources/catalog"),
+]
+LINUX_KINDS = {"flatpak", "dnf", "pacman", "aur", "npm", "mise", "script", "webapp", "link"}
+
+
+class CatalogError(Exception):
+    """A failure worth one line to the person: what went wrong and what to do."""
+
+
+def die(message: str, code: int = 1) -> "None":
+    print(f"herald-os: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+def call(argv: list[str], *, env: dict | None = None) -> int:
+    print("  $ " + " ".join(argv), flush=True)
+    try:
+        return subprocess.call(argv, env=env)
+    except FileNotFoundError:
+        print(f"herald-os: {argv[0]} is not installed", file=sys.stderr)
+        return 127
+
+
+def quiet(argv: list[str], timeout: float = 60) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return subprocess.CompletedProcess(argv, 127, "", "")
+
+
+def notify(title: str, body: str = "") -> None:
+    if shutil.which("herald-os"):
+        subprocess.run(["herald-os", "notify", title, body], capture_output=True, check=False)
+
+
+# ---------------------------------------------------------------------------------------------
+# The package layer: which system package manager this machine has, if any.
+def is_image() -> bool:
+    """Any bootc or ostree image, Herald OS's or another (Silverblue, Bazzite): /usr is read-only, so
+    software goes to Flatpak or ~/.local. Unlike herald-os's is_image, not only the Herald OS image."""
+    return Path("/run/ostree-booted").exists()
+
+
+def is_omarchy() -> bool:
+    return (HOME / ".local" / "share" / "omarchy").is_dir() or shutil.which("omarchy-update") is not None
+
+
+def pkg_manager() -> str | None:
+    if is_image():
+        return None
+    if shutil.which("pacman"):
+        return "pacman"
+    if shutil.which("dnf"):
+        return "dnf"
+    return None
+
+
+def aur_helper() -> str | None:
+    return next((helper for helper in ("yay", "paru") if shutil.which(helper)), None)
+
+
+def sudo() -> list[str]:
+    """Ask for a password only when a person is at a terminal; otherwise fail fast."""
+    if os.geteuid() == 0:
+        return []
+    return ["sudo"] if sys.stdin.isatty() else ["sudo", "-n"]
+
+
+def pkg_command(action: str, names: list[str], manager: str | None = None) -> list[str]:
+    manager = manager or pkg_manager()
+    if manager == "dnf":
+        return [*sudo(), "dnf", "-y", "install" if action == "install" else "remove", *names]
+    if manager == "pacman":
+        # Omarchy installs packages through its own wrapper (it keeps its package lists in step).
+        omarchy_add = shutil.which("omarchy-pkg-add") if is_omarchy() else None
+        if action == "install" and omarchy_add:
+            return [omarchy_add, *names]
+        return [*sudo(), "pacman", "--noconfirm", *(["--needed", "-S"] if action == "install" else ["-Rns"]), *names]
+    if manager == "aur":
+        helper = aur_helper()
+        if not helper:
+            raise CatalogError("AUR packages need an AUR helper (yay or paru)")
+        # AUR helpers build as the user and call sudo themselves.
+        return [helper, "--noconfirm", *(["--needed", "-S"] if action == "install" else ["-Rns"]), *names]
+    raise CatalogError("this system has no package manager Herald OS can use; try the Flatpak instead" if is_image() else "no dnf or pacman here")
+
+
+def pkg_available(name: str, manager: str | None = None) -> bool:
+    """The system repositories have a package by this name."""
+    manager = manager or pkg_manager()
+    if manager == "dnf":
+        return quiet(["dnf", "-q", "list", "--available", name], timeout=180).returncode == 0
+    if manager == "pacman":
+        return quiet(["pacman", "-Si", name], timeout=60).returncode == 0
+    return False
+
+
+def pkg_installed(names: list[str], manager: str | None = None) -> bool:
+    manager = manager or pkg_manager()
+    if manager == "dnf":
+        return quiet(["rpm", "-q", *names], timeout=30).returncode == 0
+    if manager in ("pacman", "aur"):
+        return quiet(["pacman", "-Q", *names], timeout=30).returncode == 0
+    return False
+
+
+def pkg_run(action: str, names: list[str], manager: str | None = None) -> int:
+    argv = pkg_command(action, names, manager)
+    code = call(argv)
+    if code != 0 and argv[:2] == ["sudo", "-n"]:
+        print("herald-os: this needs administrator rights; run the same `herald-os install …` in a terminal to type your password", file=sys.stderr)
+    return code
+
+
+# ---------------------------------------------------------------------------------------------
+# The machine and the catalog.
+def machine() -> dict:
+    arch = platform.machine().lower()
+    arch = {"arm64": "aarch64", "amd64": "x86_64"}.get(arch, arch)
+    return {
+        "arch": arch,
+        "kvm": Path("/dev/kvm").exists(),
+        "pm": pkg_manager(),
+        "aur": aur_helper(),
+        "flatpak": shutil.which("flatpak") is not None,
+        "image": is_image(),
+        "omarchy": is_omarchy(),
+    }
+
+
+def catalog_dir() -> Path | None:
+    return next((d for d in CATALOG_DIRS if d and d.is_dir() and any(d.glob("*.json"))), None)
+
+
+def load_catalog(directory: Path | None = None) -> list[dict]:
+    directory = directory or catalog_dir()
+    if not directory:
+        return []
+    groups = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            group = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"herald-os: skipping {path.name}: {exc}", file=sys.stderr)
+            continue
+        group.setdefault("entries", [])
+        groups.append(group)
+    return sorted(groups, key=lambda group: (group.get("order", 99), group.get("id", "")))
+
+
+def find_entry(entry_id: str, groups: list[dict] | None = None) -> tuple[dict, dict]:
+    for group in groups if groups is not None else load_catalog():
+        for entry in group["entries"]:
+            if entry["id"] == entry_id:
+                return group, entry
+    raise CatalogError(f"{entry_id!r} is not in the catalog (see `herald-os catalog list`)")
+
+
+def arch_label(arches: list[str]) -> str:
+    return "an x86_64 PC" if arches == ["x86_64"] else " or ".join(arches)
+
+
+def entry_reason(entry: dict, m: dict) -> str | None:
+    if entry.get("arch") and m["arch"] not in entry["arch"]:
+        return f"needs {arch_label(entry['arch'])}"
+    if "kvm" in entry.get("needs", []) and not m["kvm"]:
+        return "needs a PC with virtualization (KVM) turned on"
+    return None
+
+
+def method_reason(method: dict, m: dict) -> str | None:
+    kind = method.get("kind")
+    if kind not in LINUX_KINDS:
+        return "macOS only"
+    if method.get("arch") and m["arch"] not in method["arch"]:
+        return f"needs {arch_label(method['arch'])}"
+    if kind == "flatpak":
+        return None if m["flatpak"] else "needs Flatpak"
+    if kind in ("dnf", "pacman"):
+        return None if m["pm"] == kind else f"needs {kind}"
+    if kind == "aur":
+        return None if m["pm"] == "pacman" and m["aur"] else "needs an AUR helper (yay or paru)"
+    if kind == "script":
+        recipe = RECIPES.get(method.get("ref", ""))
+        return "unknown recipe" if recipe is None else recipe.reason(m)
+    return None
+
+
+def pick_method(entry: dict, m: dict) -> tuple[dict | None, str | None]:
+    """The first install method this machine can use, or why none can."""
+    reason = entry_reason(entry, m)
+    if reason:
+        return None, reason
+    reasons = []
+    for method in entry.get("install", []):
+        why = method_reason(method, m)
+        if why is None:
+            return method, None
+        reasons.append(why)
+    return None, (reasons[0] if reasons else "no way to install it here")
+
+
+def find_bin(name: str) -> str | None:
+    for candidate in (LOCAL / "bin" / name, MISE_DATA / "shims" / name):
+        if candidate.exists():
+            return str(candidate)
+    return shutil.which(name)
+
+
+def mise_tool(ref: str) -> str:
+    return ref.split("@", 1)[0]
+
+
+def mise_installed(ref: str) -> bool:
+    # A version is a folder; `uninstall` leaves its alias links (latest, 0.25) dangling behind.
+    installs = MISE_DATA / "installs" / mise_tool(ref)
+    return installs.is_dir() and any(entry.is_dir() for entry in installs.iterdir())
+
+
+def webapp_desktop(label: str) -> Path:
+    slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") or "webapp"
+    return APPS_DIR / f"hermes-webapp-{slug}.desktop"
+
+
+class Probe:
+    """System queries for one listing, each run once."""
+
+    def __init__(self, m: dict):
+        self.m = m
+        self._flatpaks: set[str] | None = None
+
+    def flatpaks(self) -> set[str]:
+        if self._flatpaks is None:
+            listed = quiet(["flatpak", "list", "--app", "--columns=application"], timeout=60) if self.m["flatpak"] else None
+            self._flatpaks = set(listed.stdout.split()) if listed and listed.returncode == 0 else set()
+        return self._flatpaks
+
+    def method_installed(self, entry: dict, method: dict) -> bool:
+        kind, ref = method.get("kind"), method.get("ref", "")
+        if kind == "flatpak":
+            return ref in self.flatpaks()
+        if kind in ("dnf", "pacman", "aur"):
+            manager = "dnf" if kind == "dnf" else "pacman"
+            return self.m["pm"] == manager and pkg_installed(ref.split(), manager)
+        if kind == "mise":
+            return mise_installed(ref)
+        if kind == "npm":
+            # Ours: npm --prefix ~/.local puts the agent's command in ~/.local/bin.
+            return any((LOCAL / "bin" / name).exists() for name in entry.get("bin", []))
+        if kind == "webapp":
+            return webapp_desktop(entry["label"]).exists()
+        if kind == "script" and ref in RECIPES:
+            return RECIPES[ref].installed()
+        return False
+
+    def installed_method(self, entry: dict) -> dict | None:
+        return next((method for method in entry.get("install", []) if self.method_installed(entry, method)), None)
+
+    def installed(self, entry: dict) -> bool:
+        if any(Path(os.path.expanduser(path)).exists() for path in entry.get("detect", [])):
+            return True
+        if any(find_bin(name) for name in entry.get("bin", [])):
+            return True
+        return self.installed_method(entry) is not None
+
+
+def entry_view(group: dict, entry: dict, m: dict, probe: Probe) -> dict:
+    method, reason = pick_method(entry, m)
+    installed = probe.installed(entry)
+    view = {
+        "id": entry["id"],
+        "label": entry["label"],
+        "description": entry.get("description", ""),
+        "group": group["id"],
+        "installed": installed,
+        "available": method is not None,
+        "method": method["kind"] if method else None,
+        # Only what one of the catalog's own methods installed can be removed from here.
+        "removable": installed and probe.installed_method(entry) is not None,
+    }
+    if reason:
+        view["reason"] = reason
+    for key in ("terminal", "terminalApp", "hermes"):
+        if entry.get(key):
+            view[key] = entry[key]
+    if entry.get("bin"):
+        view["bin"] = entry["bin"][0]
+    if method and method["kind"] == "link":
+        view["url"] = method["ref"]
+    return view
+
+
+def listing(group_id: str | None = None) -> dict:
+    m = machine()
+    probe = Probe(m)
+    groups = []
+    for group in load_catalog():
+        if group_id and group["id"] != group_id:
+            continue
+        groups.append({
+            "id": group["id"],
+            "label": group.get("label", group["id"]),
+            "description": group.get("description", ""),
+            "entries": [entry_view(group, entry, m, probe) for entry in group["entries"]],
+        })
+    return {"machine": m, "groups": groups}
+
+
+# ---------------------------------------------------------------------------------------------
+# Installing and removing.
+def ensure_mise() -> str:
+    found = find_bin("mise")
+    if found:
+        return found
+    if RECIPES["mise"].install({}) != 0:
+        raise CatalogError("could not install mise")
+    return str(LOCAL / "bin" / "mise")
+
+
+def ensure_npm() -> str:
+    """npm from the system, or Node LTS through mise when there is none."""
+    found = find_bin("npm")
+    if found:
+        return found
+    print("==> Node.js first (npm installs the coding agents)")
+    if call([ensure_mise(), "use", "-g", "node@lts"]) != 0:
+        raise CatalogError("could not install Node.js")
+    return str(MISE_DATA / "shims" / "npm")
+
+
+def run_method(entry: dict, method: dict, opts: dict) -> int:
+    kind, ref = method["kind"], method.get("ref", "")
+    if kind == "flatpak":
+        call(["flatpak", "remote-add", "--user", "--if-not-exists", "flathub", "https://dl.flathub.org/repo/flathub.flatpakrepo"])
+        return call(["flatpak", "install", "-y", "--noninteractive", "--user", "flathub", ref])
+    if kind in ("dnf", "pacman", "aur"):
+        return pkg_run("install", ref.split(), kind)
+    if kind == "npm":
+        return call([ensure_npm(), "install", "-g", "--prefix", str(LOCAL), ref])
+    if kind == "mise":
+        mise = ensure_mise()
+        code = call([mise, "use", "-g", ref])
+        for step in method.get("then", []):
+            if code == 0:
+                code = call([mise, "exec", "--", *step])
+        return code
+    if kind == "script":
+        return RECIPES[ref].install(opts)
+    if kind == "webapp":
+        return call(["herald-os", "install", "webapp", entry["label"], ref, *([method["icon"]] if method.get("icon") else [])])
+    if kind == "link":
+        print(f"{entry['label']} installs from its own site; opening {ref}")
+        return call(["xdg-open", ref])
+    raise CatalogError(f"{kind} installs are not supported here")
+
+
+def remove_method(entry: dict, method: dict, opts: dict) -> int:
+    kind, ref = method["kind"], method.get("ref", "")
+    if method.get("remove"):
+        mise = find_bin("mise")
+        code = 0
+        for step in method["remove"]:
+            if code == 0:
+                code = call([mise, "exec", "--", *step] if kind == "mise" and mise else step)
+        return code
+    if kind == "flatpak":
+        return call(["flatpak", "uninstall", "-y", "--noninteractive", ref])
+    if kind in ("dnf", "pacman", "aur"):
+        return pkg_run("remove", ref.split(), kind)
+    if kind == "npm":
+        npm = find_bin("npm")
+        return call([npm, "uninstall", "-g", "--prefix", str(LOCAL), ref]) if npm else 0
+    if kind == "mise":
+        mise = find_bin("mise")
+        if not mise:
+            return 0
+        # `unuse` only takes it out of the config; the installed versions go with `uninstall`.
+        code = call([mise, "unuse", "-g", mise_tool(ref)])
+        call([mise, "uninstall", "--all", mise_tool(ref)])
+        return code
+    if kind == "script":
+        return RECIPES[ref].remove(opts)
+    if kind == "webapp":
+        return call(["herald-os", "remove", "webapp", entry["label"]])
+    raise CatalogError(f"{entry['label']} was installed from its own site; remove it the same way")
+
+
+def install(entry_id: str, opts: dict) -> int:
+    _, entry = find_entry(entry_id)
+    m = machine()
+    method, reason = pick_method(entry, m)
+    if not method:
+        raise CatalogError(f"{entry['label']} cannot be installed here: {reason}")
+    if method["kind"] != "link" and Probe(m).installed(entry):
+        print(f"{entry['label']} is already installed")
+        return 0
+    print(f"==> {entry['label']} ({method['kind']}: {method.get('ref', '')})", flush=True)
+    code = run_method(entry, method, opts)
+    if method["kind"] != "link":
+        notify("Installed" if code == 0 else "Install failed", entry["label"])
+    return code
+
+
+def remove(entry_id: str, opts: dict) -> int:
+    _, entry = find_entry(entry_id)
+    m = machine()
+    probe = Probe(m)
+    if not probe.installed(entry):
+        print(f"{entry['label']} is not installed")
+        return 0
+    method = probe.installed_method(entry)
+    if not method:
+        raise CatalogError(f"{entry['label']} was not installed from the catalog; remove it the way it was installed")
+    print(f"==> removing {entry['label']}", flush=True)
+    code = remove_method(entry, method, opts)
+    notify("Removed" if code == 0 else "Remove failed", entry["label"])
+    return code
+
+
+# ---------------------------------------------------------------------------------------------
+# Recipes: installs that are more than one command.
+def append_once(path: Path, line: str) -> None:
+    text = path.read_text() if path.exists() else ""
+    if line not in text:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as handle:
+            handle.write(("" if text.endswith("\n") or not text else "\n") + line + "\n")
+
+
+def remove_line(path: Path, line: str) -> None:
+    if path.exists():
+        kept = [existing for existing in path.read_text().splitlines() if existing != line]
+        path.write_text("\n".join(kept) + ("\n" if kept else ""))
+
+
+def add_to_path(directory: str, name: str) -> None:
+    """New terminals (bash) and apps started by the session (systemd's environment.d) both see it."""
+    append_once(HOME / ".bashrc", f'export PATH="{directory}:$PATH"  # herald-os {name}')
+    append_once(HOME / ".config" / "environment.d" / f"60-herald-os-{name}.conf", f"PATH={directory}:${{PATH}}")
+
+
+def download(urls: list[str], target: Path) -> str | None:
+    for url in urls:
+        if quiet(["curl", "-fsSL", "--retry", "2", "-o", str(target), url], timeout=1800).returncode == 0:
+            return url
+    return None
+
+
+class Recipe:
+    def reason(self, m: dict) -> str | None:
+        return None
+
+    def installed(self) -> bool:
+        return False
+
+    def install(self, opts: dict) -> int:
+        raise NotImplementedError
+
+    def remove(self, opts: dict) -> int:
+        raise NotImplementedError
+
+
+class Mise(Recipe):
+    ACTIVATE = 'eval "$(~/.local/bin/mise activate bash)"  # herald-os mise'
+
+    def installed(self) -> bool:
+        return (LOCAL / "bin" / "mise").exists() or shutil.which("mise") is not None
+
+    def install(self, opts: dict) -> int:
+        with tempfile.NamedTemporaryFile(suffix=".sh") as script:
+            if not download(["https://mise.run"], Path(script.name)):
+                raise CatalogError("could not download the mise installer")
+            code = call(["sh", script.name], env={**os.environ, "MISE_INSTALL_PATH": str(LOCAL / "bin" / "mise")})
+        if code == 0:
+            append_once(HOME / ".bashrc", self.ACTIVATE)
+            add_to_path(str(MISE_DATA / "shims"), "mise")
+        return code
+
+    def remove(self, opts: dict) -> int:
+        code = call([str(LOCAL / "bin" / "mise"), "implode", "--yes"]) if (LOCAL / "bin" / "mise").exists() else 0
+        remove_line(HOME / ".bashrc", self.ACTIVATE)
+        remove_line(HOME / ".bashrc", f'export PATH="{MISE_DATA / "shims"}:$PATH"  # herald-os mise')
+        (HOME / ".config" / "environment.d" / "60-herald-os-mise.conf").unlink(missing_ok=True)
+        return code
+
+
+class Ollama(Recipe):
+    UNIT = HOME / ".config" / "systemd" / "user" / "ollama.service"
+
+    def installed(self) -> bool:
+        return (LOCAL / "bin" / "ollama").exists() or shutil.which("ollama") is not None
+
+    def install(self, opts: dict) -> int:
+        arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(machine()["arch"])
+        if not arch:
+            raise CatalogError("Ollama ships for x86_64 and arm64 only")
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "ollama.archive"
+            base = f"https://ollama.com/download/ollama-linux-{arch}"
+            url = download([f"{base}.tar.zst", f"{base}.tgz"], archive)
+            if not url:
+                raise CatalogError("could not download Ollama")
+            # The archive holds bin/ollama and lib/ollama; ~/.local is the per-user /usr.
+            code = call(["tar", "--zstd" if url.endswith(".zst") else "-z", "-xf", str(archive), "-C", str(LOCAL)])
+        if code != 0:
+            return code
+        self.UNIT.parent.mkdir(parents=True, exist_ok=True)
+        self.UNIT.write_text(
+            "[Unit]\nDescription=Ollama (local models for Hermes)\nAfter=network-online.target\n\n"
+            "[Service]\nExecStart=%h/.local/bin/ollama serve\nEnvironment=OLLAMA_HOST=127.0.0.1:11434\nRestart=on-failure\n\n"
+            "[Install]\nWantedBy=default.target\n"
+        )
+        call(["systemctl", "--user", "daemon-reload"])
+        call(["systemctl", "--user", "enable", "--now", "ollama.service"])
+        print("Ollama runs on 127.0.0.1:11434. Pull a model with `ollama pull llama3.2`, then choose Use with Hermes.")
+        return 0
+
+    def remove(self, opts: dict) -> int:
+        call(["systemctl", "--user", "disable", "--now", "ollama.service"])
+        self.UNIT.unlink(missing_ok=True)
+        call(["systemctl", "--user", "daemon-reload"])
+        (LOCAL / "bin" / "ollama").unlink(missing_ok=True)
+        shutil.rmtree(LOCAL / "lib" / "ollama", ignore_errors=True)
+        if opts.get("purge"):
+            shutil.rmtree(HOME / ".ollama", ignore_errors=True)
+        else:
+            print("Downloaded models stay in ~/.ollama (remove --purge deletes them).")
+        return 0
+
+
+class Laravel(Recipe):
+    BIN = HOME / ".config" / "composer" / "vendor" / "bin"
+
+    def reason(self, m: dict) -> str | None:
+        return None if m["pm"] else "needs dnf or pacman for PHP"
+
+    def installed(self) -> bool:
+        return (self.BIN / "laravel").exists()
+
+    def install(self, opts: dict) -> int:
+        if not find_bin("composer"):
+            code = install("php", opts)
+            if code != 0:
+                return code
+        code = call(["composer", "global", "require", "laravel/installer"])
+        if code == 0:
+            add_to_path(str(self.BIN), "composer")
+        return code
+
+    def remove(self, opts: dict) -> int:
+        return call(["composer", "global", "remove", "laravel/installer"])
+
+
+class Tailscale(Recipe):
+    def reason(self, m: dict) -> str | None:
+        return None if m["pm"] else "needs dnf or pacman"
+
+    def installed(self) -> bool:
+        return shutil.which("tailscale") is not None
+
+    def install(self, opts: dict) -> int:
+        manager = pkg_manager()
+        if manager == "dnf":
+            repo = "https://pkgs.tailscale.com/stable/fedora/tailscale.repo"
+            if call([*sudo(), "dnf", "config-manager", "addrepo", f"--from-repofile={repo}"]) != 0:
+                call([*sudo(), "dnf", "config-manager", "--add-repo", repo])
+        code = pkg_run("install", ["tailscale"])
+        if code == 0:
+            code = call([*sudo(), "systemctl", "enable", "--now", "tailscaled"])
+            print("Tailscale is running; `sudo tailscale up` signs this machine in.")
+        return code
+
+    def remove(self, opts: dict) -> int:
+        call([*sudo(), "systemctl", "disable", "--now", "tailscaled"])
+        return pkg_run("remove", ["tailscale"])
+
+
+class OnePassword(Recipe):
+    KEY = "https://downloads.1password.com/linux/keys/1password.asc"
+    REPO = (
+        "[1password]\nname=1Password Stable Channel\nbaseurl=https://downloads.1password.com/linux/rpm/stable/$basearch\n"
+        'enabled=1\ngpgcheck=1\nrepo_gpgcheck=1\ngpgkey="https://downloads.1password.com/linux/keys/1password.asc"\n'
+    )
+
+    def reason(self, m: dict) -> str | None:
+        return None if m["pm"] == "dnf" else "uses 1Password's Fedora repository"
+
+    def installed(self) -> bool:
+        return shutil.which("1password") is not None
+
+    def install(self, opts: dict) -> int:
+        if call([*sudo(), "rpm", "--import", self.KEY]) != 0:
+            return 1
+        write = subprocess.run([*sudo(), "tee", "/etc/yum.repos.d/1password.repo"], input=self.REPO, text=True, capture_output=True)
+        if write.returncode != 0:
+            raise CatalogError("could not add 1Password's repository (administrator rights needed)")
+        return pkg_run("install", ["1password"])
+
+    def remove(self, opts: dict) -> int:
+        return pkg_run("remove", ["1password"])
+
+
+class Windows(Recipe):
+    """Windows 11 in a container (dockur/windows) under rootless Podman, reachable only from this machine."""
+
+    NAME = "herald-windows"
+    STORAGE = LOCAL / "share" / "herald-os" / "windows"
+    SHARED = HOME / "Windows"
+    CONF = CONFIG_DIR / "windows.json"
+    DESKTOP = APPS_DIR / "herald-windows.desktop"
+    RDP_CLIENTS = ("sdl-freerdp3", "sdl-freerdp", "xfreerdp3", "xfreerdp", "wlfreerdp")
+
+    def reason(self, m: dict) -> str | None:
+        if not m["kvm"]:
+            return "needs a PC with virtualization (KVM) turned on"
+        return None if shutil.which("podman") or m["pm"] else "needs Podman"
+
+    def installed(self) -> bool:
+        return shutil.which("podman") is not None and quiet(["podman", "container", "exists", self.NAME], timeout=20).returncode == 0
+
+    @staticmethod
+    def defaults() -> dict:
+        try:
+            pages, page_size = os.sysconf("SC_PHYS_PAGES"), os.sysconf("SC_PAGE_SIZE")
+            ram_gb = int(pages * page_size / 1024**3)
+        except (ValueError, OSError):
+            ram_gb = 8
+        return {"ram": max(4, min(8, ram_gb // 2)), "cpus": max(2, min(4, (os.cpu_count() or 4) // 2)), "disk": 64}
+
+    @staticmethod
+    def ask(label: str, value: int) -> int:
+        if not sys.stdin.isatty():
+            return value
+        answer = input(f"{label} [{value}]: ").strip()
+        return int(answer) if answer.isdigit() and int(answer) > 0 else value
+
+    def install(self, opts: dict) -> int:
+        if not shutil.which("podman") and install("podman", {}) != 0:
+            return 1
+        if pkg_manager() and not any(shutil.which(client) for client in self.RDP_CLIENTS):
+            pkg_run("install", ["freerdp"])
+        size = self.defaults()
+        ram = int(opts.get("ram") or self.ask("Memory for Windows, in GB", size["ram"]))
+        cpus = int(opts.get("cpus") or self.ask("Processor cores for Windows", size["cpus"]))
+        disk = int(opts.get("disk") or self.ask("Disk for Windows, in GB", size["disk"]))
+        self.STORAGE.mkdir(parents=True, exist_ok=True)
+        free_gb = shutil.disk_usage(self.STORAGE).free / 1024**3
+        if free_gb < disk + 10:
+            raise CatalogError(f"Windows needs about {disk + 10} GB free and this disk has {free_gb:.0f} GB")
+        self.SHARED.mkdir(parents=True, exist_ok=True)
+        user = re.sub(r"[^A-Za-z0-9]", "", os.environ.get("USER", "")) or "herald"
+        conf = {"user": user, "password": secrets.token_urlsafe(12), "ram": ram, "cpus": cpus, "disk": disk}
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        self.CONF.write_text(json.dumps(conf, indent=2) + "\n")
+        self.CONF.chmod(0o600)
+        code = call([
+            "podman", "run", "-d", "--name", self.NAME,
+            "--device", "/dev/kvm", "--device", "/dev/net/tun", "--cap-add", "NET_ADMIN",
+            # Bound to this machine only: the VM's desktop and Remote Desktop are not on the network.
+            "-p", "127.0.0.1:8006:8006", "-p", "127.0.0.1:3389:3389/tcp", "-p", "127.0.0.1:3389:3389/udp",
+            "-v", f"{self.STORAGE}:/storage", "-v", f"{self.SHARED}:/shared",
+            "-e", "VERSION=11", "-e", f"RAM_SIZE={ram}G", "-e", f"CPU_CORES={cpus}", "-e", f"DISK_SIZE={disk}G",
+            "-e", f"USERNAME={user}", "-e", f"PASSWORD={conf['password']}",
+            "--stop-timeout", "120", "docker.io/dockurr/windows",
+        ])
+        if code != 0:
+            return code
+        APPS_DIR.mkdir(parents=True, exist_ok=True)
+        self.DESKTOP.write_text(
+            "[Desktop Entry]\nName=Windows\nComment=Windows 11 in a virtual machine\nExec=herald-os windows connect\n"
+            "Icon=computer\nType=Application\nCategories=System;Emulator;\nTerminal=false\n"
+        )
+        print(f"Windows is installing by itself (10 to 20 minutes); watch it at http://127.0.0.1:8006. ~/Windows is shared with it.")
+        notify("Windows is installing", "It takes 10 to 20 minutes; open Windows from Applications when it is done.")
+        subprocess.run(["herald-os", "webapp-open", "http://127.0.0.1:8006", "Windows"], capture_output=True, check=False)
+        return 0
+
+    def remove(self, opts: dict) -> int:
+        code = call(["podman", "rm", "-f", "-t", "120", self.NAME])
+        self.DESKTOP.unlink(missing_ok=True)
+        if opts.get("purge"):
+            shutil.rmtree(self.STORAGE, ignore_errors=True)
+            self.CONF.unlink(missing_ok=True)
+        else:
+            print(f"The Windows disk stays in {self.STORAGE} (remove --purge deletes it); ~/Windows is untouched.")
+        return code
+
+    def status(self) -> str:
+        if not self.installed():
+            return "not installed"
+        return quiet(["podman", "inspect", "-f", "{{.State.Status}}", self.NAME], timeout=20).stdout.strip() or "unknown"
+
+    def connect(self) -> int:
+        if not self.installed():
+            raise CatalogError("Windows is not installed (herald-os install windows)")
+        if self.status() != "running":
+            call(["podman", "start", self.NAME])
+        try:
+            conf = json.loads(self.CONF.read_text())
+        except (OSError, json.JSONDecodeError):
+            conf = {}
+        client = next((found for found in map(shutil.which, self.RDP_CLIENTS) if found), None)
+        if client and conf.get("user"):
+            return call([client, "/v:127.0.0.1:3389", f"/u:{conf['user']}", f"/p:{conf.get('password', '')}", "/cert:ignore", "/dynamic-resolution", "+clipboard"])
+        # No Remote Desktop client: the browser viewer always works.
+        return call(["herald-os", "webapp-open", "http://127.0.0.1:8006", "Windows"])
+
+
+RECIPES: dict[str, Recipe] = {
+    "mise": Mise(),
+    "ollama": Ollama(),
+    "laravel": Laravel(),
+    "tailscale": Tailscale(),
+    "onepassword": OnePassword(),
+    "windows": Windows(),
+}
+
+
+# ---------------------------------------------------------------------------------------------
+def options(args: list[str]) -> tuple[list[str], dict]:
+    rest, opts = [], {}
+    it = iter(args)
+    for arg in it:
+        if arg in ("--ram", "--cpus", "--disk"):
+            value = next(it, "")
+            if not value.isdigit():
+                raise CatalogError(f"{arg} needs a number")
+            opts[arg[2:]] = int(value)
+        elif arg == "--purge":
+            opts["purge"] = True
+        else:
+            rest.append(arg)
+    return rest, opts
+
+
+def print_listing(data: dict) -> None:
+    for group in data["groups"]:
+        print(f"{group['label']}:")
+        for entry in group["entries"]:
+            state = "installed" if entry["installed"] else ("available" if entry["available"] else entry.get("reason", "unavailable"))
+            print(f"  {entry['id']:<16} {entry['label']:<22} {state}")
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+    cmd, args = argv[0], argv[1:]
+    try:
+        args, opts = options(args)
+        if cmd == "list":
+            group = args[args.index("--group") + 1] if "--group" in args and args.index("--group") + 1 < len(args) else None
+            data = listing(group)
+            if "--json" in args:
+                print(json.dumps(data, indent=2))
+            else:
+                print_listing(data)
+            return 0
+        if cmd in ("install", "remove", "status"):
+            if not args:
+                raise CatalogError(f"{cmd} needs a catalog id (see `herald-os catalog list`)")
+            if cmd == "install":
+                return install(args[0], opts)
+            if cmd == "remove":
+                return remove(args[0], opts)
+            group, entry = find_entry(args[0])
+            m = machine()
+            print(json.dumps(entry_view(group, entry, m, Probe(m)), indent=2))
+            return 0
+        if cmd == "pkg":
+            if args[:1] == ["manager"]:
+                print(pkg_manager() or ("image" if is_image() else "none"))
+                return 0
+            if len(args) < 2 or args[0] not in ("install", "remove", "has", "available"):
+                raise CatalogError("pkg manager | pkg install|remove|has|available <name>...")
+            if args[0] == "has":
+                return 0 if pkg_installed(args[1:]) else 1
+            if args[0] == "available":
+                return 0 if all(pkg_available(name) for name in args[1:]) else 1
+            return pkg_run(args[0], args[1:])
+        if cmd == "windows":
+            action = args[0] if args else "status"
+            windows = RECIPES["windows"]
+            assert isinstance(windows, Windows)
+            if action == "status":
+                print(windows.status())
+                return 0
+            if action == "connect":
+                return windows.connect()
+            if action in ("start", "stop"):
+                return call(["podman", action, windows.NAME])
+            if action == "remove":
+                return remove("windows", opts)
+            raise CatalogError("windows start|stop|status|connect|remove [--purge]")
+    except CatalogError as exc:
+        die(str(exc))
+    except KeyboardInterrupt:
+        die("cancelled", 130)
+    die(f"unknown command {cmd!r} (see herald-os-catalog --help)", 2)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

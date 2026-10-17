@@ -1,0 +1,29 @@
+# Herald OS omakase: Fedora packages every install gets. One per line; # comments.
+# Browsers, files, text.
+firefox
+nautilus
+gnome-text-editor
+# Documents and media.
+libreoffice-writer
+libreoffice-calc
+libreoffice-impress
+loupe
+papers
+gnome-calculator
+gnome-calendar
+vlc
+# Developer tools (the terminal is Herald OS's own).
+git
+gh
+ripgrep
+fd-find
+fzf
+zoxide
+btop
+lazygit
+tmux
+neovim
+# Fonts.
+jetbrains-mono-fonts
+google-noto-sans-fonts
+google-noto-emoji-color-fonts

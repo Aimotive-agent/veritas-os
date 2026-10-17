@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+"""Herald OS theme engine.
+
+One theme definition (linux/themes/<name>/theme.json) recolours the whole system at once: the
+shell (theme + accent preference), niri (borders, backdrop), swaylock, GTK 3/4 apps, the foot
+rescue terminal, and the wallpaper. Applied atomically: every file is written before the shell is
+told, and the previous theme is restored if a step fails.
+
+  herald-os-theme list | current | set <name> | show <name>
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+HOME = Path.home()
+CONFIG = HOME / ".config"
+STATE = HOME / ".config" / "herald-os"
+# The themes that came with this command come first: a checkout's linux/themes, or the app's
+# resources/themes when the command is a link into it (/opt/herald-os: the Arch package, the release
+# tarball). Copies installed elsewhere (the image, the development VM) use the folders after them.
+_SOURCE = Path(__file__).resolve().parent.parent
+THEME_DIRS = [
+    *([Path(os.environ["HERALD_OS_THEMES"])] if os.environ.get("HERALD_OS_THEMES") else []),
+    (_SOURCE.parent if _SOURCE.name == "herald-os-linux" else _SOURCE) / "themes",
+    HOME / "Herald-OS" / "linux" / "themes",
+    Path("/usr/local/share/herald-os-linux/themes"),
+    Path("/usr/share/herald-os/themes"),
+    Path("/opt/herald-os/resources/themes"),
+    STATE / "themes",
+]
+RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+SOCKET = RUNTIME / "herald-os" / "control.sock"
+DEFAULT = "herald-ocean"
+
+
+def die(message: str, code: int = 1) -> None:
+    print(f"herald-os-theme: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+def find(name: str) -> tuple[Path, dict] | None:
+    for base in THEME_DIRS:
+        if not base or not base.is_dir():
+            continue
+        candidate = base / name / "theme.json"
+        if candidate.exists():
+            return candidate.parent, json.loads(candidate.read_text())
+    return None
+
+
+def all_themes() -> dict[str, dict]:
+    found: dict[str, dict] = {}
+    for base in THEME_DIRS:
+        if not base or not base.is_dir():
+            continue
+        for entry in sorted(base.iterdir()):
+            spec = entry / "theme.json"
+            if entry.is_dir() and spec.exists() and entry.name not in found:
+                try:
+                    found[entry.name] = json.loads(spec.read_text())
+                except json.JSONDecodeError:
+                    pass
+    return found
+
+
+def current() -> str:
+    marker = STATE / "theme"
+    return marker.read_text().strip() if marker.exists() else DEFAULT
+
+
+def write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text)
+    tmp.replace(path)
+
+
+def hexn(value: str) -> str:
+    """#rrggbb -> rrggbb (swaylock wants bare hex)."""
+    return value.lstrip("#")
+
+
+def luminance(value: str) -> float:
+    """WCAG relative luminance of #rrggbb."""
+    def channel(byte: int) -> float:
+        s = byte / 255
+        return s / 12.92 if s <= 0.03928 else ((s + 0.055) / 1.055) ** 2.4
+
+    raw = hexn(value)
+    r, g, b = (int(raw[i:i + 2], 16) for i in (0, 2, 4))
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+
+def on_accent(c: dict) -> str:
+    """Button text on the accent: white while it keeps 3:1, else near-black (light accents)."""
+    return "#ffffff" if (1.05 / (luminance(c["accent"]) + 0.05)) >= 3 else "#111318"
+
+
+# ---------------------------------------------------------------------------------------------
+def render_niri(c: dict) -> str:
+    return f"""// Written by herald-os-theme; edit the theme instead (linux/themes/<name>/theme.json).
+layout {{
+    background-color "{c['bg']}"
+    border {{
+        active-color "{c['border_active']}"
+        inactive-color "{c['border_inactive']}"
+        urgent-color "{c['urgent']}"
+    }}
+    tab-indicator {{
+        active-color "{c['border_active']}"
+        inactive-color "{c['border_inactive']}"
+    }}
+}}
+overview {{
+    backdrop-color "{c['bg']}"
+}}
+"""
+
+
+def render_swaylock(c: dict) -> str:
+    return f"""# Written by herald-os-theme.
+daemonize
+ignore-empty-password
+show-failed-attempts
+indicator-radius=84
+indicator-thickness=6
+font=Inter
+font-size=22
+color={hexn(c['bg'])}
+inside-color={hexn(c['bg2'])}cc
+inside-clear-color={hexn(c['bg2'])}cc
+inside-ver-color={hexn(c['bg2'])}cc
+inside-wrong-color=3a0a1acc
+ring-color={hexn(c['accent'])}
+ring-clear-color={hexn(c['ok'])}
+ring-ver-color={hexn(c['ok'])}
+ring-wrong-color={hexn(c['urgent'])}
+key-hl-color={hexn(c['ok'])}
+bs-hl-color={hexn(c['urgent'])}
+line-color=00000000
+line-clear-color=00000000
+line-ver-color=00000000
+line-wrong-color=00000000
+separator-color=00000000
+text-color={hexn(c['fg'])}
+text-clear-color={hexn(c['fg'])}
+text-ver-color={hexn(c['fg'])}
+text-wrong-color={hexn(c['fg'])}
+"""
+
+
+def render_gtk_css(c: dict) -> str:
+    return f"""/* Written by herald-os-theme. */
+@define-color accent_color {c['accent']};
+@define-color accent_bg_color {c['accent']};
+@define-color accent_fg_color {on_accent(c)};
+@define-color window_bg_color {c['bg2']};
+@define-color window_fg_color {c['fg']};
+@define-color view_bg_color {c['surface']};
+@define-color view_fg_color {c['fg']};
+@define-color headerbar_bg_color {c['bg2']};
+@define-color headerbar_fg_color {c['fg']};
+@define-color card_bg_color {c['surface']};
+@define-color popover_bg_color {c['surface']};
+@define-color dialog_bg_color {c['surface']};
+@define-color destructive_bg_color {c['urgent']};
+@define-color success_bg_color {c['ok']};
+@define-color warning_bg_color {c['warn']};
+"""
+
+
+def render_foot(t: dict) -> str:
+    c = t["colors"]
+    term = t.get("terminal", {})
+    palette = term.get("palette") or []
+    # `herald-os font set <family> --mono` picks the code font; the terminal follows it.
+    marker = STATE / "font-mono"
+    family = marker.read_text().strip() if marker.exists() else ""
+    lines = [
+        "# Written by herald-os-theme.",
+        "[main]",
+        f"font={family or 'JetBrains Mono'}:size=11, Noto Sans Mono:size=11",
+        "pad=12x12",
+        "",
+        "[colors]",
+        "alpha=0.96",
+        f"background={hexn(term.get('background', c['bg']))}",
+        f"foreground={hexn(term.get('foreground', c['fg']))}",
+        f"cursor={hexn(term.get('background', c['bg']))} {hexn(term.get('cursor', c['accent']))}",
+    ]
+    names = ["regular0", "regular1", "regular2", "regular3", "regular4", "regular5", "regular6", "regular7",
+             "bright0", "bright1", "bright2", "bright3", "bright4", "bright5", "bright6", "bright7"]
+    for key, colour in zip(names, palette):
+        lines.append(f"{key}={hexn(colour)}")
+    return "\n".join(lines) + "\n"
+
+
+HERMES_SKIN = "herald-os"
+
+
+def render_hermes_skin(theme: dict) -> str:
+    """Hermes's own CLI and TUI skin in the theme's colours (the same mapping the shell writes)."""
+    c = theme["colors"]
+    label = str(theme.get("label") or theme.get("name") or "Herald OS").replace('"', "'")
+    colors = {
+        "banner_border": c["accent"], "banner_title": c["accent_strong"], "banner_accent": c["accent"],
+        "banner_dim": c["fg_dim"], "banner_text": c["fg"], "ui_accent": c["accent"], "ui_label": c["accent_strong"],
+        "ui_ok": c["ok"], "ui_error": c["urgent"], "ui_warn": c["warn"], "prompt": c["fg"], "input_rule": c["border_inactive"],
+        "response_border": c["accent"], "status_bar_bg": c["bg2"], "status_bar_text": c["fg_dim"],
+        "status_bar_strong": c["accent_strong"], "status_bar_dim": c["fg_dim"], "status_bar_good": c["ok"],
+        "status_bar_warn": c["warn"], "status_bar_bad": c["urgent"], "status_bar_critical": c["urgent"],
+        "session_label": c["accent"], "session_border": c["border_inactive"], "completion_menu_bg": c["bg2"],
+        "completion_menu_current_bg": c["surface"], "selection_bg": c["surface"], "shell_dollar": c["accent"],
+        "voice_status_bg": c["bg2"],
+    }
+    lines = [f'# Written by Herald OS from its "{label}" theme; Herald OS rewrites it when the theme changes.',
+             f"name: {HERMES_SKIN}", f'description: "Herald OS: {label}"', "colors:"]
+    lines += [f'  {key}: "{value}"' for key, value in colors.items()]
+    return "\n".join(lines) + "\n"
+
+
+def relay(payload: dict) -> bool:
+    if not SOCKET.exists():
+        return False
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(5)
+            s.connect(str(SOCKET))
+            s.sendall((json.dumps(payload) + "\n").encode())
+            s.recv(4096)
+        return True
+    except OSError:
+        return False
+
+
+def gsettings(schema: str, key: str, value: str) -> None:
+    if shutil.which("gsettings"):
+        subprocess.run(["gsettings", "set", schema, key, value], check=False, capture_output=True)
+
+
+# ---------------------------------------------------------------------------------------------
+def apply(name: str) -> int:
+    found = find(name)
+    if not found:
+        die(f"no theme named {name!r} (see `herald-os-theme list`)", 1)
+    theme_dir, theme = found
+    c = theme["colors"]
+    shell = theme.get("shell", {})
+    gtk = theme.get("gtk", {})
+
+    hermes_home = Path(os.environ.get("HERMES_HOME") or HOME / ".hermes")
+    targets = {
+        CONFIG / "niri" / "theme.kdl": render_niri(c),
+        CONFIG / "swaylock" / "config": render_swaylock(c),
+        CONFIG / "gtk-3.0" / "gtk.css": render_gtk_css(c),
+        CONFIG / "gtk-4.0" / "gtk.css": render_gtk_css(c),
+        CONFIG / "foot" / "foot.ini": render_foot(theme),
+        hermes_home / "skins" / f"{HERMES_SKIN}.yaml": render_hermes_skin(theme),
+    }
+    backups = {path: (path.read_text() if path.exists() else None) for path in targets}
+    try:
+        for path, text in targets.items():
+            write(path, text)
+        gsettings("org.gnome.desktop.interface", "color-scheme", gtk.get("color_scheme", "prefer-dark"))
+        if gtk.get("theme"):
+            gsettings("org.gnome.desktop.interface", "gtk-theme", gtk["theme"])
+        write(STATE / "theme", name + "\n")
+    except Exception as exc:  # noqa: BLE001 - restore whatever was written.
+        for path, text in backups.items():
+            if text is None:
+                path.unlink(missing_ok=True)
+            else:
+                write(path, text)
+        die(f"could not apply {name}: {exc}", 1)
+
+    # Wallpaper: a theme may ship an image; "default" means the shell's procedural one.
+    wallpaper = theme.get("wallpaper", "default")
+    wallpaper_path = "" if wallpaper in ("default", "", None) else str((theme_dir / wallpaper).resolve())
+    payload = {"cmd": "theme", "args": [name], "shell": shell, "wallpaper": wallpaper_path, "colors": c}
+    if not relay(payload):
+        print("shell not running; it will pick the theme up on next start")
+    print(f"applied {theme.get('label', name)}")
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] in {"-h", "--help", "help"}:
+        print(__doc__.strip())
+        return 0
+    cmd, args = argv[0], argv[1:]
+    if cmd == "list":
+        cur = current()
+        for name, theme in all_themes().items():
+            mark = "*" if name == cur else " "
+            print(f"{mark} {name:<18} {theme.get('label', '')}  {theme.get('description', '')}")
+        return 0
+    if cmd == "current":
+        print(current())
+        return 0
+    if cmd == "show":
+        found = find(args[0]) if args else None
+        if not found:
+            die("show <name>", 2)
+        print(json.dumps(found[1], indent=2))
+        return 0
+    if cmd == "set":
+        if not args:
+            die("set <name>", 2)
+        return apply(args[0])
+    die(f"unknown command {cmd!r}", 2)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

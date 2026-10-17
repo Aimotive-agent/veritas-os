@@ -1,0 +1,71 @@
+{
+  "id": "ai",
+  "label": "AI",
+  "order": 1,
+  "description": "Coding agents for the terminal, and local models Hermes can run on.",
+  "entries": [
+    {
+      "id": "claude-code",
+      "label": "Claude Code",
+      "description": "Anthropic's coding agent in the terminal.",
+      "bin": ["claude"],
+      "terminal": true,
+      "install": [{ "kind": "npm", "ref": "@anthropic-ai/claude-code" }]
+    },
+    {
+      "id": "codex",
+      "label": "Codex",
+      "description": "OpenAI's coding agent in the terminal.",
+      "bin": ["codex"],
+      "terminal": true,
+      "install": [{ "kind": "npm", "ref": "@openai/codex" }]
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "description": "An open-source coding agent for the terminal that works with many providers.",
+      "bin": ["opencode"],
+      "terminal": true,
+      "install": [{ "kind": "npm", "ref": "opencode-ai" }]
+    },
+    {
+      "id": "gemini-cli",
+      "label": "Gemini CLI",
+      "description": "Google's Gemini agent in the terminal.",
+      "bin": ["gemini"],
+      "terminal": true,
+      "install": [{ "kind": "npm", "ref": "@google/gemini-cli" }]
+    },
+    {
+      "id": "copilot-cli",
+      "label": "Copilot CLI",
+      "description": "GitHub Copilot's agent in the terminal.",
+      "bin": ["copilot"],
+      "terminal": true,
+      "install": [{ "kind": "npm", "ref": "@github/copilot" }]
+    },
+    {
+      "id": "ollama",
+      "label": "Ollama",
+      "description": "Run open models on this machine. \"Use with Hermes\" points Hermes at it.",
+      "bin": ["ollama"],
+      "hermes": "ollama",
+      "install": [
+        { "kind": "script", "ref": "ollama" },
+        { "kind": "brew", "ref": "ollama" },
+        { "kind": "link", "ref": "https://ollama.com/download" }
+      ]
+    },
+    {
+      "id": "lm-studio",
+      "label": "LM Studio",
+      "description": "Download and chat with local models; its server is OpenAI-compatible, so Hermes can use it.",
+      "detect": ["~/.lmstudio", "/Applications/LM Studio.app"],
+      "hermes": "lmstudio",
+      "install": [
+        { "kind": "brew-cask", "ref": "lm-studio" },
+        { "kind": "link", "ref": "https://lmstudio.ai/download" }
+      ]
+    }
+  ]
+}
