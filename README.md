@@ -28,11 +28,11 @@ Veritas OS generalises that into an **Agent Manager**:
 | | |
 |---|---|
 | **Agent Hub** | Every agent as a live card: phase, port, start/stop/restart, log tail, pair. |
-| **Agents in the sidebar** | Connected agents sit **with** Hermes at the top — click one and it takes over the page, exactly like Hermes does. |
-| **Embedded agent UIs** | Agents that ship a web UI (OpenCode) are rendered *inside* the shell in a native view — no browser, no second window. |
+| **Agents in the sidebar** | Connected agents — and terminal agents you've opened — sit **with** Hermes at the top; click one and it takes over the page, exactly like Hermes does. |
+| **Embedded agent UIs** | Agents that ship a web UI (OpenCode) are rendered *inside* the shell in a native view; CLI agents (Copilot, Claude Code, …) get an embedded terminal page — no browser, no second window. |
 | **Hermes, native** | Hermes keeps its first-class surface: JSON-RPC chat, streaming replies, sessions, tools, approvals. |
 | **Pairing** | One-click `opencode pair` — a real, validating one-time link, generated against the agent's own service. |
-| **Popular CLI agents** | A catalog of the well-known terminal agents (Claude Code, Codex, OpenCode, Gemini CLI, Copilot CLI, …) — install, then open in a Veritas OS terminal. |
+| **Popular CLI agents** | A catalog of the well-known terminal agents (Claude Code, Codex, OpenCode, Gemini CLI, Copilot CLI, …) — install, then open as an embedded terminal page pinned in the sidebar. |
 | **Missions on any agent** | "New mission" asks *which agent* should run it. Hermes plans a todo list and works through it; other agents take the goal as a prompt. |
 
 ### A real shell (inherited, and it is good)
@@ -40,7 +40,7 @@ Veritas OS generalises that into an **Agent Manager**:
 - **Files** — browse, search, thumbnails, reveal, trash, drag into the agent.
 - **Canvas** — a layered image editor with PSD support, AI generative fill and background selection, driven by the agent.
 - **Capture** — screenshot region/window/screen, markup editor, screen recording with a camera bubble.
-- **Terminal** — a real PTY terminal (`node-pty`), tabs, and "open this agent in a terminal".
+- **Terminal** — a real PTY terminal (`node-pty`) with tabs; coding agents open as their own embedded terminal page.
 - **Automations** — event- and schedule-driven routines the agent can run.
 - **Memory & Missions** — what the agent knows, and long-running work with a plan and a review step.
 - **Connections** — MCP servers, messaging platforms, toolsets and provider sign-in, all discovered and probed live.
@@ -132,6 +132,14 @@ The shell starts its agents automatically: the **Hermes** backend (if installed)
 
 `~/.local/share/applications/veritas-os.desktop` → runs `start.sh`, so it launches from your app launcher like any other app.
 
+### Linux CLI
+
+On Linux, the catalog, installs, themes and keymap are driven by the `herald-os` CLI that ships in `linux/bin/`. Put them on your PATH so the shell finds them:
+
+```bash
+for f in linux/bin/*; do ln -sf "$(pwd)/$f" ~/.local/bin/$(basename "$f"); done
+```
+
 ## Architecture
 
 ```
@@ -146,10 +154,11 @@ electron/
 shared/ipc.ts             the typed IPC contract shared by main and renderer
 preload/index.ts          window.heraldOS — the context bridge
 src/                      the React shell: sidebar, dock, windows, features/*
-  features/agents/        Agent Hub, agent page, popular-agents catalog
+  features/agents/        Agent Hub, agent pages (web + embedded terminal), popular-agents catalog
   features/browser/       the inline browser
   features/missions/      mission composer with the agent picker
 resources/                catalog, themes, the hermes bridge plugin
+linux/                    the Linux CLI (herald-os): catalog, install, theme, keymap, idle
 public/brand/             brand images (resolved at runtime — see notes)
 ```
 
