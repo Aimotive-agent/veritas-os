@@ -232,7 +232,7 @@ function PreferredModelRow({ ready }: { ready: boolean }) {
     setPending(`${providerSlug}:${model}`)
 
     try {
-      await gatewayRequest('slash.exec', { session_id: chat.sessionId, command: `/model ${providerSlug}:${model}` })
+      await gatewayRequest('slash.exec', { session_id: chat.sessionId, command: `/model ${model} --provider ${providerSlug} --global` })
       markSaved()
       notify({ title: 'Model changed', body: `${providerSlug} · ${model}`, level: 'success' })
       setOpen(false)

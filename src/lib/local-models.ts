@@ -8,5 +8,5 @@ export function localModelConfig(kind: 'ollama' | 'lmstudio', model: string): Re
 
 /** The `/model` argument that switches the live conversation to the same model. */
 export function localModelSwitch(kind: 'ollama' | 'lmstudio', model: string): string {
-  return `${kind === 'ollama' ? 'custom' : 'lmstudio'}:${model}`
+  return `${model} --provider ${kind === 'ollama' ? 'custom' : 'lmstudio'}`
 }
