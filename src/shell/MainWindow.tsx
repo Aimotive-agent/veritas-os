@@ -2,7 +2,9 @@ import { useStore } from '@nanostores/react'
 import { type ComponentType, Suspense, lazy } from 'react'
 import { SurfaceErrorBoundary } from '../components/error-boundary.tsx'
 import { AgentPage } from '../features/agents/AgentPage.tsx'
+import { TerminalAgentPage } from '../features/agents/TerminalAgentPage.tsx'
 import { agentIdFromPage } from '../store/agent-pages.ts'
+import { terminalIdFromPage } from '../store/terminal.ts'
 import { $page } from '../store/windows.ts'
 import type { PageId } from './apps.ts'
 import { Sidebar } from './Sidebar.tsx'
@@ -48,15 +50,16 @@ export function MainWindow() {
         <div className="glass-card relative h-full overflow-hidden rounded-xl" style={{ background: 'var(--color-page, rgba(5, 18, 66, 0.42))' }}>
           {[...visited].map(id => {
             const agentId = agentIdFromPage(id)
+            const terminalId = terminalIdFromPage(id)
             const View = PAGE_VIEW[id as keyof typeof PAGE_VIEW]
             const active = id === page
-            const label = agentId ? agentId : (PAGE_LABEL[id as keyof typeof PAGE_LABEL] ?? id)
+            const label = agentId ? agentId : terminalId ? terminalId : (PAGE_LABEL[id as keyof typeof PAGE_LABEL] ?? id)
 
             return (
               <div key={id} className={active ? 'page-enter absolute inset-0' : 'absolute inset-0'} style={active ? undefined : { visibility: 'hidden', pointerEvents: 'none' }} aria-hidden={!active}>
                 <SurfaceErrorBoundary label={label}>
                   <Suspense fallback={<PageSkeleton />}>
-                    {agentId ? <AgentPage agentId={agentId} active={active} /> : View ? <View active={active} /> : null}
+                    {agentId ? <AgentPage agentId={agentId} active={active} /> : terminalId ? <TerminalAgentPage agentId={terminalId} active={active} /> : View ? <View active={active} /> : null}
                   </Suspense>
                 </SurfaceErrorBoundary>
               </div>

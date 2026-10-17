@@ -2,7 +2,7 @@ import type { ComponentType } from 'react'
 import type { InstalledApp } from '../../shared/ipc.ts'
 
 /** Pages inside the main Hermes window (sidebar navigation). */
-export type PageId = 'overview' | 'hermes' | 'agents' | 'browser' | 'missions' | 'memory' | 'files' | 'automations' | 'connections' | 'settings' | `agent:${string}`
+export type PageId = 'overview' | 'hermes' | 'agents' | 'browser' | 'missions' | 'memory' | 'files' | 'automations' | 'connections' | 'settings' | `agent:${string}` | `terminal:${string}`
 
 /** Apps that open in their own floating window. */
 export type FloatingAppId = 'terminal' | 'system' | 'chat-popout' | 'web' | 'studio' | 'capture-editor' | 'camera' | 'widget' | 'canvas'

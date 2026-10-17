@@ -8,7 +8,7 @@ import { $sidebar, SIDEBAR_COLLAPSED, SIDEBAR_MAX, SIDEBAR_MIN, SIDEBAR_SNAP, se
 import { $activeSpace, $spaces, addSpace, setActiveSpace } from '../store/spaces.ts'
 import { $page, showPage } from '../store/windows.ts'
 import { $agentPages, agentPageId, bindAgentPages } from '../store/agent-pages.ts'
-import { $terminalAgents, openTerminalProgram } from '../store/terminal.ts'
+import { $terminalAgents, terminalPageId } from '../store/terminal.ts'
 import { PAGES } from './apps.ts'
 
 /** The persistent left rail of the main Hermes window: identity, pages, spaces. Resizable; collapses to icons. */
@@ -143,7 +143,7 @@ export function Sidebar() {
           <button
             key={`terminal:${agent.id}`}
             type="button"
-            onClick={() => openTerminalProgram(agent.id, agent.label)}
+            onClick={() => showPage(terminalPageId(agent.id))}
             aria-label={collapsed ? agent.label : undefined}
             title={collapsed ? undefined : `${agent.label} — open in the Terminal`}
             className={cn(

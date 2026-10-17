@@ -1,6 +1,5 @@
 import { atom } from 'nanostores'
-import { isPanels } from './shell.ts'
-import { openApp } from './windows.ts'
+import { showPage } from './windows.ts'
 
 /** A coding agent to start in a new Terminal tab (desktop mode; panels mode sends a command instead). */
 export const $terminalRequest = atom<{ program: string; label: string; at: number } | null>(null)
@@ -22,16 +21,16 @@ export function pinTerminalAgent(id: string, label: string): void {
   }
 }
 
-/** Open the Terminal with a new tab running a catalog coding agent (claude, codex, …). */
+/** A page id for one terminal agent's embedded surface, e.g. `terminal:copilot-cli`. */
+export const terminalPageId = (id: string): `terminal:${string}` => `terminal:${id}`
+
+/** The terminal agent id behind a page id, or null when the page is not a terminal agent page. */
+export function terminalIdFromPage(page: string): string | null {
+  return page.startsWith('terminal:') ? page.slice('terminal:'.length) : null
+}
+
+/** Open a catalog coding agent (claude, codex, …): pin it and show its embedded terminal page. */
 export function openTerminalProgram(program: string, label: string): void {
   pinTerminalAgent(program, label)
-
-  if (isPanels) {
-    window.heraldOS.shell.open('window:terminal', { type: 'terminal-program', args: [program, label] }).catch(() => undefined)
-
-    return
-  }
-
-  $terminalRequest.set({ program, label, at: Date.now() })
-  openApp('terminal')
+  showPage(terminalPageId(program))
 }
