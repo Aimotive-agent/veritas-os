@@ -78,7 +78,7 @@
       "description": "Local AI model runner, trainer and coding-agent launcher.",
       "bin": ["unsloth"],
       "terminal": true,
-      "terminalArgs": ["chat"],
+      "terminalArgs": ["studio", "run"],
       "detect": ["~/.unsloth", "~/Applications/unsloth.AppImage"],
       "install": [
         { "kind": "link", "ref": "https://unsloth.ai" }
