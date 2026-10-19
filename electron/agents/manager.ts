@@ -106,6 +106,17 @@ export function builtInAgentSpecs(): AgentSpec[] {
       /** Missions run as a prompt to the shared service, so the agent page shows the work. */
       runCommand: [opencodeBin(), 'run', '{goal}'],
       defaultEnabled: true
+    },
+    {
+      id: 'unsloth',
+      name: 'Unsloth Studio',
+      kind: 'unsloth',
+      /** The studio is a local web app (model runner + trainer) served on its own port. */
+      command: ['unsloth', 'studio', 'run', '--model', 'unsloth/LFM2.5-1.2B-Instruct-GGUF', '--port', '{port}'],
+      env: {},
+      readyUrl: 'http://127.0.0.1:{port}/api/health',
+      embedUrl: 'http://127.0.0.1:{port}/',
+      defaultEnabled: false
     }
   ]
 }

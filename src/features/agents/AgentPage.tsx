@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Spinner } from '../../components/ui/primitives.tsx'
 import { $agentPages, bindAgentPages } from '../../store/agent-pages.ts'
 
@@ -16,6 +16,13 @@ export function AgentPage({ agentId, active = true }: { agentId: string; active?
   const [viewId, setViewId] = useState<string | null>(null)
 
   const embedUrl = agent?.phase === 'ready' ? agent.embedUrl : null
+
+  // Auto-start a stopped agent when its page is opened (matches how terminal agents run on open).
+  useEffect(() => {
+    if (active && agent?.phase === 'stopped') {
+      void window.heraldOS.agents.start(agentId)
+    }
+  }, [active, agent?.phase, agentId])
 
   // (Re)open the view whenever the agent's URL changes (a restart hands out a new port).
   useLayoutEffect(() => {
