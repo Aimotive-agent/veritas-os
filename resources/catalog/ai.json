@@ -78,7 +78,7 @@
       "description": "Local AI model runner, trainer and coding-agent launcher.",
       "bin": ["unsloth"],
       "terminal": true,
-      "terminalArgs": ["studio", "run"],
+      "terminalArgs": ["studio", "run", "--model", "unsloth/LFM2.5-1.2B-Instruct-GGUF"],
       "detect": ["~/.unsloth", "~/Applications/unsloth.AppImage"],
       "install": [
         { "kind": "link", "ref": "https://unsloth.ai" }
