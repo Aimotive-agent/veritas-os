@@ -71,6 +71,18 @@
         { "kind": "brew-cask", "ref": "lm-studio" },
         { "kind": "link", "ref": "https://lmstudio.ai/download" }
       ]
+    },
+    {
+      "id": "unsloth",
+      "label": "Unsloth Studio",
+      "description": "Local AI model runner, trainer and coding-agent launcher.",
+      "bin": ["unsloth"],
+      "terminal": true,
+      "terminalArgs": ["chat"],
+      "detect": ["~/.unsloth", "~/Applications/unsloth.AppImage"],
+      "install": [
+        { "kind": "link", "ref": "https://unsloth.ai" }
+      ]
     }
   ]
 }
