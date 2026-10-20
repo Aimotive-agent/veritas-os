@@ -1,6 +1,6 @@
 import { IconBrandGithub, IconDownload, IconPlayerPlay, IconTerminal2 } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
-import type { CatalogGroupView } from '../../../../shared/ipc.ts'
+import type { CatalogGroupView } from '../../../shared/ipc.ts'
 import { GlassButton, GlassCard, Pill, Section } from '../../components/ui/glass.tsx'
 import { notify } from '../../store/notifications.ts'
 import { openTerminalProgram } from '../../store/terminal.ts'
@@ -39,7 +39,7 @@ export function PopularCliAgents() {
     setBusy(id)
     try {
       const result = await window.heraldOS.catalog.install(id)
-      notify({ title: `Installed ${label}`, body: result?.message ?? 'Ready to run.', level: 'success' })
+      notify({ title: `Installed ${label}`, body: result.output.trim() || 'Ready to run.', level: 'success' })
       load()
     } catch (error) {
       notify({ title: `Could not install ${label}`, body: error instanceof Error ? error.message : String(error), level: 'error' })

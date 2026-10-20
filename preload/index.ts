@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import {
   type AgentPairResult,
   type AgentSnapshot,
+  type AgentSpec,
   type BrowserOsInfo,
   type BrowserTab,
   type ShellAutomation,
@@ -42,6 +43,7 @@ import {
   IPC,
   type MicPermission,
   type NetworkStatus,
+  type OpencodeMcpServer,
   type OsControlReply,
   type OsControlRequest,
   type ProcessInfo,
@@ -52,6 +54,7 @@ import {
   type RestRequest,
   type ScreenshotMode,
   type ShellCommand,
+  type ShellMission,
   type ShellMode,
   type ShellSurface,
   type StatusPanelId,
@@ -64,6 +67,7 @@ import {
   type TerminalHandle,
   type TreeChangedEvent,
   type TreeEntry,
+  type VeritasStatus,
   type WebOpenOptions,
   type WebViewBounds,
   type WebViewEvent,
@@ -428,8 +432,28 @@ const api = {
     pair: (id: string): Promise<AgentPairResult> => ipcRenderer.invoke(IPC.agentsPair, id),
     /** Hand one mission goal to an agent that can run missions. */
     run: (id: string, goal: string): Promise<void> => ipcRenderer.invoke(IPC.agentsRun, id, goal),
+    /** Add a user agent (persisted to ~/.config/veritas-os/agents.json). */
+    add: (spec: AgentSpec): Promise<AgentSnapshot[]> => ipcRenderer.invoke(IPC.agentsAdd, spec),
+    /** Remove a user agent by id. */
+    remove: (id: string): Promise<AgentSnapshot[]> => ipcRenderer.invoke(IPC.agentsRemove, id),
     /** Fires whenever any extra agent changes state (list is the fresh snapshot). */
     onChanged: (listener: (agents: AgentSnapshot[]) => void): Unsubscribe => subscribe<AgentSnapshot[]>(IPC.agentsChanged, listener)
+  },
+  /** The Veritas agent: OpenCode as the OS operator. */
+  veritas: {
+    status: (): Promise<VeritasStatus> => ipcRenderer.invoke(IPC.veritasStatus),
+    ask: (text: string): Promise<string> => ipcRenderer.invoke(IPC.veritasAsk, text),
+    configure: (patch: { telegram?: { botToken?: string; allowedChatIds?: number[]; enabled?: boolean } }): Promise<VeritasStatus> => ipcRenderer.invoke(IPC.veritasConfigure, patch),
+    onChanged: (listener: (status: VeritasStatus) => void): Unsubscribe => subscribe<VeritasStatus>(IPC.veritasChanged, listener)
+  },
+  /** Missions the shell handed to non-Hermes agents (shown in the Missions page). */
+  shellMissions: {
+    list: (): Promise<ShellMission[]> => ipcRenderer.invoke(IPC.shellMissionsList),
+    onChanged: (listener: (missions: ShellMission[]) => void): Unsubscribe => subscribe<ShellMission[]>(IPC.shellMissionsChanged, listener)
+  },
+  /** OpenCode's configured MCP servers (read-only, from ~/.config/opencode/opencode.json). */
+  opencode: {
+    mcp: (): Promise<OpencodeMcpServer[]> => ipcRenderer.invoke(IPC.opencodeMcpList)
   },
   /** Automations the shell owns (they run on an agent other than Hermes). */
   shellAutomations: {

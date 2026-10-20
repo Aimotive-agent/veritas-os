@@ -2,8 +2,9 @@ import { useStore } from '@nanostores/react'
 import { IconLayoutGrid, IconPlugConnected, IconPlus, IconRefresh } from '@tabler/icons-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { EmptyGlass, GlassButton, GlassCard, PageHeader, SearchField, Tabs, type TabDef } from '../../components/ui/glass.tsx'
-import { useBackendData } from '../../lib/use-async.ts'
+import { useLocalData } from '../../lib/use-async.ts'
 import { sendPrompt } from '../../store/chat.ts'
+import { $backend } from '../../store/backend.ts'
 import { $connectionsTick, setConnectionEnabled } from '../../store/connections-actions.ts'
 import { $activity } from '../../store/missions.ts'
 import { notify } from '../../store/notifications.ts'
@@ -22,7 +23,16 @@ export function ConnectionsPage() {
   const activity = useStore($activity)
   // Reload when a command (voice, agent) changed a connection outside this page.
   const connectionsTick = useStore($connectionsTick)
-  const { data, error, loading, reload } = useBackendData(loadConnections, [connectionsTick])
+  const { data, error, loading, reload } = useLocalData(loadConnections, [connectionsTick])
+  const backend = useStore($backend)
+
+  // Connections are REST data, not gateway data: reload once the Hermes backend is ready.
+  useEffect(() => {
+    if (backend.phase === 'ready') {
+      reload()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backend.phase])
   const [tab, setTab] = useState<TabId>('connected')
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -133,6 +143,12 @@ export function ConnectionsPage() {
         return
       }
 
+      if (connection.source.kind === 'opencode-mcp') {
+        notify({ title: 'Managed in OpenCode', body: 'Add or remove OpenCode MCP servers in OpenCode itself.', level: 'info' })
+
+        return
+      }
+
       // Shared with the command registry (store/connections-actions.ts).
       await setConnectionEnabled(connection, enabled)
     })
@@ -186,6 +202,9 @@ export function ConnectionsPage() {
           break
         case 'provider':
           await startProviderSignIn(source.provider.id, source.provider.name, source.provider.flow, source.provider.cli_command)
+          break
+        case 'opencode-mcp':
+          notify({ title: 'Managed in OpenCode', body: 'Add or remove OpenCode MCP servers in OpenCode itself.', level: 'info' })
           break
       }
     })
@@ -242,6 +261,9 @@ export function ConnectionsPage() {
             notify({ title: `Signed out of ${connection.name}`, level: 'success' })
           }
 
+          break
+        case 'opencode-mcp':
+          notify({ title: 'Managed in OpenCode', body: 'Add or remove OpenCode MCP servers in OpenCode itself.', level: 'info' })
           break
       }
 

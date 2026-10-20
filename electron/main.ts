@@ -33,6 +33,11 @@ import { registerAgentsIpc } from './agents/ipc.ts'
 import { registerBrowserIpc } from './ipc/browser.ts'
 import { AgentManager } from './agents/manager.ts'
 import { ShellAutomations } from './agents/automations.ts'
+import { VeritasMcpServer } from './mcp/server.ts'
+import { VeritasAgent } from './veritas/agent.ts'
+import { registerVeritasIpc } from './ipc/veritas.ts'
+import { registerOpencodeIpc } from './ipc/opencode.ts'
+import { VeritasTelegram } from './veritas/telegram.ts'
 import { log, logTail } from './log.ts'
 import { migrateLegacyData } from './migrate.ts'
 import { registerNotificationHistoryIpc } from './notifications-history.ts'
@@ -98,6 +103,9 @@ const shellAutomations = new ShellAutomations(agents, () => {
     }
   }
 })
+/** The Veritas agent: OpenCode as the OS operator, plus the MCP bridge that gives it agents/apps/system. */
+const veritasAgent = new VeritasAgent()
+const veritasTelegram = new VeritasTelegram(veritasAgent, agents)
 let mainWindow: BrowserWindow | null = null
 const mode = shellMode()
 // Panels mode (niri): several surface windows, compositor state mirror, control socket for hotkeys.
@@ -194,6 +202,15 @@ backend.setControl(osControlPath, osControlToken())
 const notifications = panels ? new NotificationDaemon(panels) : null
 /** Deliver a ShellCommand to the Hermes window; panels mode queues it until that window has loaded. */
 const toHermesWindow = (command: ShellCommand) => (panels ? panels.relay('main', command) : mainWindow?.webContents.send(IPC.shellCommand, command))
+/** Veritas's MCP bridge: agents/apps/system tools, plus the shell controls it can drive. */
+const veritasMcp = new VeritasMcpServer(agents, {
+  showPage: page => toHermesWindow({ type: 'show-page', args: [page] }),
+  notify: (title, body) => {
+    if (Notification.isSupported()) {
+      new Notification({ title: String(title).slice(0, 120), body: String(body).slice(0, 400), silent: true }).show()
+    }
+  }
+})
 const crashes = new CrashWatcher(
   report => toHermesWindow({ type: 'crash', payload: { ...report } }),
   () => [backend.childPid()].filter((pid): pid is number => pid !== null),
@@ -322,6 +339,8 @@ function registerCoreIpc(): void {
   registerVoiceIpc(backend)
   // Desktop mode layers pages over the shell window; panels mode gives them compositor windows.
   registerAgentsIpc(agents, shellAutomations)
+  registerVeritasIpc(veritasAgent)
+  registerOpencodeIpc()
   registerBrowserIpc()
   const webViews = registerWebIpc(mode === 'desktop')
   registerEditIpc(() => webViews)
@@ -402,6 +421,8 @@ app.whenReady().then(async () => {
   void backend.start()
   void agents.startDefaults()
   shellAutomations.start()
+  veritasTelegram.apply(veritasAgent.getTelegramConfig())
+  veritasMcp.start()
 })
 
 app.on('second-instance', () => {
@@ -443,5 +464,7 @@ app.on('before-quit', event => {
   panels?.stop()
   appHost?.stop()
   shellAutomations.stop()
+  veritasTelegram.stop()
+  veritasMcp.stop()
   void Promise.allSettled([backend.stop(), agents.stopAll()]).finally(() => app.quit())
 })

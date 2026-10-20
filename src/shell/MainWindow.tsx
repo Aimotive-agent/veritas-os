@@ -13,6 +13,7 @@ import { Sidebar } from './Sidebar.tsx'
 const PAGE_VIEW: Record<PageId, ComponentType> = {
   overview: lazy(() => import('../features/overview/OverviewPage.tsx').then(m => ({ default: m.OverviewPage }))),
   hermes: lazy(() => import('../features/hermes/HermesPage.tsx').then(m => ({ default: m.HermesPage }))),
+  veritas: lazy(() => import('../features/veritas/VeritasPage.tsx').then(m => ({ default: m.VeritasPage }))),
   agents: lazy(() => import('../features/agents/AgentsPage.tsx').then(m => ({ default: m.AgentsPage }))),
   browser: lazy(() => import('../features/browser/BrowserPage.tsx').then(m => ({ default: m.BrowserPage }))),
   missions: lazy(() => import('../features/missions/MissionsPage.tsx').then(m => ({ default: m.MissionsPage }))),
@@ -26,6 +27,7 @@ const PAGE_VIEW: Record<PageId, ComponentType> = {
 const PAGE_LABEL: Record<PageId, string> = {
   overview: 'Overview',
   hermes: 'Hermes',
+  veritas: 'Veritas',
   agents: 'Agents',
   browser: 'Browser',
   missions: 'Missions',

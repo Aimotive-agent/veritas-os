@@ -1,13 +1,15 @@
 import { useStore } from '@nanostores/react'
-import { IconCopy, IconLink, IconPlayerPlay, IconPlayerStop, IconRefresh, IconTerminal2, IconWorld } from '@tabler/icons-react'
+import { IconCopy, IconLink, IconPlayerPlay, IconPlayerStop, IconPlus, IconRefresh, IconTerminal2, IconTrash, IconWorld } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 import { EmptyGlass, GlassButton, GlassCard, PageHeader, Pill, Section, StatusDot } from '../../components/ui/glass.tsx'
 import type { AgentPairResult, AgentSnapshot, BackendState } from '../../../shared/ipc.ts'
 import { notify } from '../../store/notifications.ts'
 import { $backend } from '../../store/backend.ts'
+import { $agentPages, bindAgentPages, refreshAgentPages } from '../../store/agent-pages.ts'
 import { openWebWindow } from '../../store/web-windows.ts'
 import { showPage } from '../../store/windows.ts'
 import { cn } from '../../lib/cn.ts'
+import { AddAgentForm } from './AddAgentForm.tsx'
 import { PopularCliAgents } from './PopularCliAgents.tsx'
 
 /*
@@ -36,22 +38,33 @@ const PHASE_LABEL: Record<string, string> = {
 
 export function AgentsPage() {
   const backend = useStore($backend)
-  const [agents, setAgents] = useState<AgentSnapshot[]>([])
+  const agents = useStore($agentPages)
   const [busy, setBusy] = useState<string | null>(null)
   const [openLogs, setOpenLogs] = useState<string | null>(null)
+  const [adding, setAdding] = useState(false)
 
   useEffect(() => {
-    void window.heraldOS.agents.list().then(setAgents)
-    return window.heraldOS.agents.onChanged(setAgents)
+    bindAgentPages()
   }, [])
 
   const run = async (id: string, action: 'start' | 'stop' | 'restart') => {
     setBusy(`${id}:${action}`)
     try {
-      const next = await window.heraldOS.agents[action](id)
-      setAgents(next)
+      await window.heraldOS.agents[action](id)
     } catch (error) {
       notify({ title: 'Agent action failed', body: error instanceof Error ? error.message : String(error), level: 'error' })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const remove = async (agent: AgentSnapshot) => {
+    setBusy(`${agent.id}:remove`)
+    try {
+      await window.heraldOS.agents.remove(agent.id)
+      notify({ title: 'Agent removed', body: `${agent.name} is gone.`, level: 'success' })
+    } catch (error) {
+      notify({ title: `Could not remove ${agent.name}`, body: error instanceof Error ? error.message : String(error), level: 'error' })
     } finally {
       setBusy(null)
     }
@@ -78,7 +91,7 @@ export function AgentsPage() {
           <GlassButton
             variant="secondary"
             onClick={() => {
-              void window.heraldOS.agents.list().then(setAgents)
+              void refreshAgentPages()
             }}
           >
             <IconRefresh /> Refresh
@@ -89,12 +102,20 @@ export function AgentsPage() {
         <Section title="Primary">
           <PrimaryCard backend={backend} />
         </Section>
-        <Section title="Additional agents">
+        <Section
+          title="Additional agents"
+          action={
+            <GlassButton variant="secondary" onClick={() => setAdding(current => !current)}>
+              <IconPlus /> {adding ? 'Close form' : 'Add agent'}
+            </GlassButton>
+          }
+        >
+          {adding ? <AddAgentForm onDone={() => setAdding(false)} /> : null}
           {agents.length === 0 ? (
             <EmptyGlass
               icon={<IconTerminal2 />}
               title="No extra agents yet"
-              description="Add one in ~/.config/veritas-os/agents.json (command, health URL, optional web UI)."
+              description="Use Add agent above, or drop a spec in ~/.config/veritas-os/agents.json (command, health URL, optional web UI)."
             />
           ) : (
             <div className="flex flex-col gap-3">
@@ -106,6 +127,7 @@ export function AgentsPage() {
                   logsOpen={openLogs === agent.id}
                   onToggleLogs={() => setOpenLogs(current => (current === agent.id ? null : agent.id))}
                   onAction={run}
+                  onRemove={() => void remove(agent)}
                   onOpen={() => void openAgentUi(agent)}
                 />
               ))}
@@ -160,6 +182,7 @@ function AgentCard({
   logsOpen,
   onToggleLogs,
   onAction,
+  onRemove,
   onOpen
 }: {
   agent: AgentSnapshot
@@ -167,6 +190,7 @@ function AgentCard({
   logsOpen: boolean
   onToggleLogs: () => void
   onAction: (id: string, action: 'start' | 'stop' | 'restart') => void
+  onRemove: () => void
   onOpen: () => void
 }) {
   const tone = PHASE_TONE[agent.phase] ?? 'muted'
@@ -223,6 +247,11 @@ function AgentCard({
           <GlassButton variant="ghost" size="icon" aria-label={`Stop ${agent.name}`} disabled={working || agent.phase === 'stopped'} onClick={() => onAction(agent.id, 'stop')}>
             <IconPlayerStop />
           </GlassButton>
+          {!agent.builtin ? (
+            <GlassButton variant="danger" size="icon" aria-label={`Remove ${agent.name}`} disabled={working} onClick={onRemove}>
+              <IconTrash />
+            </GlassButton>
+          ) : null}
           <button
             type="button"
             onClick={onToggleLogs}

@@ -2,7 +2,7 @@ import type { ComponentType } from 'react'
 import type { InstalledApp } from '../../shared/ipc.ts'
 
 /** Pages inside the main Hermes window (sidebar navigation). */
-export type PageId = 'overview' | 'hermes' | 'agents' | 'browser' | 'missions' | 'memory' | 'files' | 'automations' | 'connections' | 'settings' | `agent:${string}` | `terminal:${string}`
+export type PageId = 'overview' | 'hermes' | 'veritas' | 'agents' | 'browser' | 'missions' | 'memory' | 'files' | 'automations' | 'connections' | 'settings' | `agent:${string}` | `terminal:${string}`
 
 /** Apps that open in their own floating window. */
 export type FloatingAppId = 'terminal' | 'system' | 'chat-popout' | 'web' | 'studio' | 'capture-editor' | 'camera' | 'widget' | 'canvas'
@@ -47,6 +47,7 @@ export type AppIconId =
 export const PAGES: readonly HermesAppDef<PageId>[] = [
   { id: 'overview', name: 'Overview', tagline: 'Your day, already in motion.', category: 'productivity', kind: 'page', icon: 'overview', shortcut: '1' },
   { id: 'hermes', name: 'Hermes', tagline: 'Talk to your computer.', category: 'productivity', kind: 'page', icon: 'hermes', shortcut: '2' },
+  { id: 'veritas', name: 'Veritas', tagline: 'OpenCode, operating every agent and app.', category: 'system', kind: 'page', icon: 'terminal' },
   { id: 'agents', name: 'Agents', tagline: 'Hermes, OpenCode and every agent you add.', category: 'productivity', kind: 'page', icon: 'agents' },
   { id: 'browser', name: 'Browser', tagline: 'Browse here or hand it to BrowserOS.', category: 'productivity', kind: 'page', icon: 'browser' },
   { id: 'missions', name: 'Missions', tagline: 'From intent to finished work.', category: 'productivity', kind: 'page', icon: 'missions', shortcut: '3' },

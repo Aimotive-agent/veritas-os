@@ -1,0 +1,8 @@
+# Pinned hermes-agent snapshot that @herald-os/client re-exports (apps/shared JSON-RPC
+# gateway + generated wire contract). @herald-os/client's src imports these via
+# `../../../upstream/hermes-agent/apps/shared/src`.
+#
+# `npm install` prunes the node_modules/upstream symlink; recreate it with:
+#   ln -s ../upstream node_modules/upstream
+commit = 1dfef400a790f7fc6bda5b270d1683480c3e15bb
+source = https://github.com/Aimotive-agent/hermes-agent-1

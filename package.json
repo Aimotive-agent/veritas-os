@@ -15,7 +15,9 @@
     "build:preload": "esbuild preload/index.ts --bundle --platform=node --format=cjs --external:electron --packages=external --outfile=dist/electron/preload.cjs",
     "build:renderer": "vite build",
     "build": "npm run build:main && npm run build:preload && npm run build:renderer",
-    "start": "electron ."
+    "start": "electron .",
+    "typecheck": "tsc --noEmit",
+    "postinstall": "node scripts/ensure-upstream.mjs"
   },
   "dependencies": {
     "@herald-os/client": "*",
@@ -38,10 +40,14 @@
     "shiki": "4.4.3"
   },
   "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.0.0",
     "electron": "^39.8.10",
     "esbuild": "^0.28.2",
-    "vite": "^7.3.7",
-    "@vitejs/plugin-react": "^5.0.0"
+    "typescript": "^7.0.2",
+    "vite": "^7.3.7"
   },
   "allowScripts": {
     "electron@39.8.10": true

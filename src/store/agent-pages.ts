@@ -17,6 +17,11 @@ export function bindAgentPages(): void {
   window.heraldOS.agents.onChanged(agents => $agentPages.set(agents))
 }
 
+/** Re-read the agent list from main; the onChanged subscription keeps it fresh the rest of the time. */
+export async function refreshAgentPages(): Promise<void> {
+  $agentPages.set(await window.heraldOS.agents.list())
+}
+
 /** A page id for one agent's inline surface, e.g. `agent:opencode`. */
 export const agentPageId = (id: string): `agent:${string}` => `agent:${id}`
 

@@ -1,5 +1,6 @@
 import { rest } from '../../lib/rest.ts'
 import type { ActivityEntry } from '../../store/missions.ts'
+import type { OpencodeMcpServer } from '../../../shared/ipc.ts'
 
 /*
  * A Connection is a uniform view over three upstream things the Hermes runtime exposes over REST:
@@ -150,7 +151,7 @@ export interface Connection {
   lastActivity?: number
   allowedFolders?: string[]
   /** Kind-specific upstream data the actions need. */
-  source: { kind: 'mcp'; server: McpServerRow; catalog?: McpCatalogEntry } | { kind: 'messaging'; platform: MessagingPlatformRow; toolsets: ToolsetRow[] } | { kind: 'toolset'; toolset: ToolsetRow } | { kind: 'provider'; provider: OAuthProviderRow }
+  source: { kind: 'mcp'; server: McpServerRow; catalog?: McpCatalogEntry } | { kind: 'messaging'; platform: MessagingPlatformRow; toolsets: ToolsetRow[] } | { kind: 'toolset'; toolset: ToolsetRow } | { kind: 'provider'; provider: OAuthProviderRow } | { kind: 'opencode-mcp'; server: OpencodeMcpServer }
 }
 
 /** Something the Browse tab can add. */
@@ -201,15 +202,19 @@ async function settle<T>(label: string, promise: Promise<T>, fallback: T, warnin
 
 export async function loadConnections(): Promise<ConnectionsSnapshot> {
   const warnings: string[] = []
-  const [servers, catalog, toolsets, messaging, providers] = await Promise.all([
+  const [servers, catalog, toolsets, messaging, providers, opencodeServers] = await Promise.all([
     settle('MCP servers', rest.get<{ servers: McpServerRow[] }>('/api/mcp/servers').then(r => r.servers ?? []), [], warnings),
     settle('MCP catalog', rest.get<{ entries: McpCatalogEntry[] }>('/api/mcp/catalog').then(r => r.entries ?? []), [], warnings),
     settle('Toolsets', rest.get<ToolsetRow[]>('/api/tools/toolsets').then(r => (Array.isArray(r) ? r : [])), [], warnings),
     settle('Messaging platforms', rest.get<{ platforms: MessagingPlatformRow[] }>('/api/messaging/platforms').then(r => r.platforms ?? []), [], warnings),
-    settle('Providers', rest.get<{ providers: OAuthProviderRow[] }>('/api/providers/oauth').then(r => r.providers ?? []), [], warnings)
+    settle('Providers', rest.get<{ providers: OAuthProviderRow[] }>('/api/providers/oauth').then(r => r.providers ?? []), [], warnings),
+    settle('OpenCode MCP', window.heraldOS.opencode.mcp(), [], warnings)
   ])
 
-  return { ...normalise({ servers, catalog, toolsets, messaging, providers }), warnings }
+  const normalised = normalise({ servers, catalog, toolsets, messaging, providers })
+  const opencodeConnections = opencodeServers.map(opencodeConnection)
+
+  return { connections: [...normalised.connections, ...opencodeConnections].sort(byStatusThenName), browse: normalised.browse, warnings }
 }
 
 /* ---- Normalisation ------------------------------------------------------------------------ */
@@ -402,6 +407,24 @@ function providerConnection(provider: OAuthProviderRow): Connection {
     tools: [],
     logoKey: provider.id,
     source: { kind: 'provider', provider }
+  }
+}
+
+/** An OpenCode MCP server, shown read-only (it is managed in OpenCode, not through Hermes). */
+function opencodeConnection(server: OpencodeMcpServer): Connection {
+  const status: ConnectionStatus = server.enabled ? 'connected' : 'disabled'
+  const transport = server.type === 'remote' ? `Remote MCP server at ${hostOf(server.url)}.` : `Local MCP server (${(server.command ?? []).join(' ').slice(0, 80) || 'stdio'}).`
+
+  return {
+    id: `opencode:${server.name}`,
+    kind: 'mcp',
+    name: server.name,
+    description: `OpenCode ${transport}`.trim(),
+    status,
+    scope: 'OpenCode',
+    tools: [],
+    logoKey: server.name,
+    source: { kind: 'opencode-mcp', server }
   }
 }
 

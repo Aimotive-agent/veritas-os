@@ -110,7 +110,7 @@ export function Sidebar() {
       </div>
 
       <nav className={cn('relative mt-5 flex flex-col gap-0.5', collapsed && 'w-full items-center')} aria-label="Pages">
-        {PAGES.filter(def => def.id === 'overview' || def.id === 'hermes').map(renderPageButton)}
+        {PAGES.filter(def => def.id === 'overview' || def.id === 'hermes' || def.id === 'veritas').map(renderPageButton)}
 
         {/* Connected agents sit with Hermes, not at the bottom of the list. */}
         {agentPages.map(agent => {
@@ -157,7 +157,7 @@ export function Sidebar() {
           </button>
         ))}
 
-        {PAGES.filter(def => def.id !== 'overview' && def.id !== 'hermes').map(renderPageButton)}
+        {PAGES.filter(def => def.id !== 'overview' && def.id !== 'hermes' && def.id !== 'ceo' && def.id !== 'veritas').map(renderPageButton)}
       </nav>
 
       <div className={cn('my-4 h-px bg-line', collapsed ? 'w-6' : 'mx-1')} />

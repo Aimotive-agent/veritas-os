@@ -1,5 +1,6 @@
 import type { GatewayEvent, SubagentEventPayload, ToolCompletePayload, ToolStartPayload } from '@herald-os/client'
 import { atom, computed, map } from 'nanostores'
+import type { ShellMission } from '../../shared/ipc.ts'
 import type { ChatState } from '../lib/chat-model.ts'
 import { systemFilesOutputs } from '../lib/file-ops.ts'
 import { $agents, type AgentActivity } from './agents.ts'
@@ -7,6 +8,7 @@ import { $chats, SESSION_SOURCE } from './chat.ts'
 import { onAnyGatewayEvent } from './gateway.ts'
 import { $pendingRequests } from './requests.ts'
 import { $runtimeIds, $sessions } from './sessions.ts'
+import { $shellMissions } from './shell-missions.ts'
 
 /*
  * Missions are derived, never stored: a mission is a Hermes session viewed through its goal, its
@@ -312,7 +314,7 @@ function goalOf(chat: ChatState | undefined, preview?: string): string {
   return (first && 'text' in first ? first.text : preview) ?? ''
 }
 
-export const $missions = computed([$chats, $sessions, $runtimeIds, $todos, $artifacts, $agents, $pendingRequests, $reviewed], (chats, sessions, runtimeIds, todos, artifacts, agents, pending, reviewed) => {
+export const $missions = computed([$chats, $sessions, $runtimeIds, $todos, $artifacts, $agents, $pendingRequests, $reviewed, $shellMissions], (chats, sessions, runtimeIds, todos, artifacts, agents, pending, reviewed, shellMissions) => {
   const missions: Mission[] = []
   const seenRuntime = new Set<string>()
 
@@ -331,6 +333,11 @@ export const $missions = computed([$chats, $sessions, $runtimeIds, $todos, $arti
     if (!seenRuntime.has(chat.sessionId)) {
       missions.push(buildMission(chat.storedSessionId, chat.sessionId, chat, chat.title, undefined, undefined, chat.messages.length, SESSION_SOURCE, todos, artifacts, agents, pending, reviewed))
     }
+  }
+
+  // Every non-Hermes agent's mission, tracked by the shell, appears here too.
+  for (const shellMission of shellMissions) {
+    missions.push(shellMissionToMission(shellMission))
   }
 
   return missions.sort((a, b) => b.updatedAt - a.updatedAt)
@@ -391,6 +398,28 @@ function buildMission(
     messageCount: messageCount ?? chat?.messages.length ?? 0,
     source,
     live: Boolean(chat)
+  }
+}
+
+/** A shell-tracked (non-Hermes) mission, shaped like a Hermes mission for the Missions page. */
+function shellMissionToMission(sm: ShellMission): Mission {
+  const finished = sm.finishedAt ?? 0
+
+  return {
+    id: `agent:${sm.id}`,
+    title: sm.agentName,
+    goal: sm.goal,
+    status: sm.status === 'running' ? 'active' : sm.status === 'failed' ? 'review' : 'completed',
+    progress: sm.status === 'completed' || sm.status === 'failed' ? 100 : 35,
+    steps: [],
+    currentStep: sm.status === 'running' ? 'Working…' : undefined,
+    agents: [],
+    artifacts: [],
+    updatedAt: finished || sm.startedAt,
+    startedAt: sm.startedAt,
+    messageCount: 1,
+    source: sm.agentId,
+    live: false
   }
 }
 

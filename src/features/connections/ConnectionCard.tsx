@@ -13,7 +13,7 @@ export interface ConnectionActions {
 
 /** Whether "Disable/Enable" makes sense for this connection (providers only sign in/out). */
 export function canToggle(connection: Connection): boolean {
-  return connection.kind !== 'provider'
+  return connection.kind !== 'provider' && connection.source.kind !== 'opencode-mcp'
 }
 
 export function ConnectionCard({ connection, selected, onSelect, actions, busy }: { connection: Connection; selected: boolean; onSelect: () => void; actions: ConnectionActions; busy?: boolean }) {

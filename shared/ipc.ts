@@ -723,6 +723,25 @@ export const IPC = {
   agentsPair: 'herald-os:agents:pair',
   /** Hand a mission goal to an agent that can run one. */
   agentsRun: 'herald-os:agents:run',
+  /** Add a user agent (writes ~/.config/veritas-os/agents.json and registers it live). */
+  agentsAdd: 'herald-os:agents:add',
+  /** Remove a user agent (built-in agents cannot be removed). */
+  agentsRemove: 'herald-os:agents:remove',
+
+  /** The Veritas agent (OpenCode-backed operator) and its own Telegram channel. */
+  veritasStatus: 'herald-os:veritas:status',
+  veritasAsk: 'herald-os:veritas:ask',
+  veritasConfigure: 'herald-os:veritas:configure',
+  /** main -> renderer: the Veritas agent's state changed. */
+  veritasChanged: 'herald-os:veritas:changed',
+
+  /** Missions a non-Hermes agent is running (tracked by the shell, shown in the Missions page). */
+  shellMissionsList: 'herald-os:shell-missions:list',
+  /** main -> renderer: the shell-tracked missions changed. */
+  shellMissionsChanged: 'herald-os:shell-missions:changed',
+
+  /** OpenCode's configured MCP servers (shown read-only in the Connections page). */
+  opencodeMcpList: 'herald-os:opencode:mcp-list',
 
   /** Automations the shell owns because they run on an agent other than Hermes. */
   shellAutomationsList: 'herald-os:automations:list',
@@ -1123,8 +1142,41 @@ export interface AgentSnapshot {
   canPair?: boolean
   /** The agent can run a mission goal. */
   canRun?: boolean
+  /** Built-in agents ship with the shell and cannot be removed. */
+  builtin?: boolean
   error?: string
   logTail?: string[]
+}
+
+/** State of the Veritas agent (OpenCode-backed) as the shell sees it. */
+export interface VeritasStatus {
+  telegramConfigured: boolean
+  telegramEnabled: boolean
+  /** Which Telegram user ids may talk to Veritas (the bot token is never sent to the shell). */
+  allowedChatIds: number[]
+  busy: boolean
+  lastError?: string
+}
+
+/** A mission a non-Hermes agent is running (tracked by the shell, not Hermes). */
+export interface ShellMission {
+  id: string
+  agentId: string
+  agentName: string
+  goal: string
+  status: 'running' | 'completed' | 'failed'
+  startedAt: number
+  finishedAt?: number
+}
+
+/** An MCP server configured in OpenCode (shown read-only in the Connections page). */
+export interface OpencodeMcpServer {
+  name: string
+  type: 'remote' | 'local'
+  url?: string
+  command?: string[]
+  enabled: boolean
+  auth: 'oauth' | 'header' | 'none'
 }
 
 /** BrowserOS state as the shell sees it. */

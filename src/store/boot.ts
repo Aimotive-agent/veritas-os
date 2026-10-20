@@ -12,6 +12,7 @@ import { $connectionEpoch, bindGatewayToBackend } from './gateway.ts'
 import { bindFollow } from './follow.ts'
 import { bindHermesAuth } from './hermes-auth.ts'
 import { bindMissionEvents } from './missions.ts'
+import { bindShellMissions } from './shell-missions.ts'
 import { bindSidebarPrefs } from './sidebar.ts'
 import { bindNotificationEvents, bindNotificationHistory } from './notifications.ts'
 import { bindOsControl } from './os-control.ts'
@@ -49,6 +50,7 @@ export function bootRenderer(): void {
   bindNotificationEvents()
   bindAgentEvents()
   bindMissionEvents()
+  bindShellMissions()
   bindSidebarPrefs()
   bindVoice()
   bindWake()

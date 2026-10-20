@@ -4,7 +4,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { EventEmitter } from 'node:events'
-import type { AgentPairResult, AgentSnapshot, AgentSpec } from '../../shared/ipc.ts'
+import type { AgentPairResult, AgentSnapshot, AgentSpec, ShellMission } from '../../shared/ipc.ts'
 import { log } from '../log.ts'
 
 /*
@@ -126,14 +126,49 @@ function userAgentsPath(): string {
 }
 
 function loadUserAgentSpecs(): AgentSpec[] {
+  const builtinIds = new Set(builtInAgentSpecs().map(spec => spec.id))
   try {
     const raw = JSON.parse(fs.readFileSync(userAgentsPath(), 'utf8')) as { agents?: AgentSpec[] } | AgentSpec[]
     const list = Array.isArray(raw) ? raw : (raw.agents ?? [])
 
-    return list.filter(spec => typeof spec?.id === 'string' && Array.isArray(spec.command))
+    return list.filter(spec => typeof spec?.id === 'string' && Array.isArray(spec.command) && !builtinIds.has(spec.id))
   } catch {
     return []
   }
+}
+
+/** Normalise a user-supplied spec and reject anything the shell cannot run. */
+function sanitizeSpec(input: AgentSpec): AgentSpec {
+  const id = input.id?.trim()
+  if (!id) {
+    throw new Error('An agent needs an id.')
+  }
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) {
+    throw new Error('id must be lowercase letters, digits and dashes.')
+  }
+  if (new Set(builtInAgentSpecs().map(spec => spec.id)).has(id)) {
+    throw new Error(`"${id}" is a built-in agent; choose another id.`)
+  }
+  const command = (input.command ?? []).map(String).filter(Boolean)
+  if (!command.length) {
+    throw new Error('An agent needs a command.')
+  }
+
+  const clean: AgentSpec = {
+    id,
+    name: input.name?.trim() || id,
+    kind: input.kind?.trim() || 'custom',
+    command,
+    readyUrl: input.readyUrl?.trim() || 'http://127.0.0.1:{port}/'
+  }
+  if (input.cwd?.trim()) clean.cwd = input.cwd.trim()
+  if (input.env && Object.keys(input.env).length) clean.env = input.env
+  if (input.embedUrl?.trim()) clean.embedUrl = input.embedUrl.trim()
+  if (input.pairCommand?.length) clean.pairCommand = input.pairCommand.map(String).filter(Boolean)
+  if (input.runCommand?.length) clean.runCommand = input.runCommand.map(String).filter(Boolean)
+  if (input.defaultEnabled) clean.defaultEnabled = true
+
+  return clean
 }
 
 /** One extra agent: its process, readiness, logs and restart policy. */
@@ -147,13 +182,13 @@ class Agent {
   private restartTimer: ReturnType<typeof setTimeout> | null = null
   private readonly tail: string[] = []
 
-  constructor(spec: AgentSpec, private readonly onChange: () => void, private readonly emitLog: (line: string) => void) {
+  constructor(spec: AgentSpec, readonly builtin: boolean, private readonly onChange: () => void, private readonly emitLog: (line: string) => void) {
     this.spec = spec
     this.state = { id: spec.id, name: spec.name, kind: spec.kind, phase: 'stopped', attempt: 0, port: null, embedUrl: null }
   }
 
   snapshot(): AgentSnapshot {
-    return { ...this.state, canPair: Boolean(this.spec.pairCommand?.length), canRun: Boolean(this.spec.runCommand?.length), logTail: this.tail.slice(-LOG_TAIL_LINES) }
+    return { ...this.state, builtin: this.builtin, canPair: Boolean(this.spec.pairCommand?.length), canRun: Boolean(this.spec.runCommand?.length), logTail: this.tail.slice(-LOG_TAIL_LINES) }
   }
 
   async start(): Promise<void> {
@@ -247,6 +282,7 @@ class Agent {
     const existing = discoverOpencodeService()
     if (existing) {
       this.port = existing.port
+      this.record(`attached to the shared OpenCode service on :${existing.port}`)
       this.set({ phase: 'ready', port: existing.port, embedUrl: `${existing.url}/`, error: undefined })
       log('agents', `opencode attached to the shared service on :${existing.port}`)
       return
@@ -271,6 +307,7 @@ class Agent {
       if (found) {
         clearInterval(poll)
         this.port = found.port
+        this.record(`shared OpenCode service ready on :${found.port}`)
         this.set({ phase: 'ready', port: found.port, embedUrl: `${found.url}/`, error: undefined })
         log('agents', `opencode service ready on :${found.port}`)
         return
@@ -351,16 +388,68 @@ class Agent {
 /** Owns every extra agent and broadcasts their state to the shell. */
 export class AgentManager extends EventEmitter {
   private readonly agents = new Map<string, Agent>()
+  private readonly missions = new Map<string, ShellMission>()
 
   constructor() {
     super()
-    for (const spec of [...builtInAgentSpecs(), ...loadUserAgentSpecs()]) {
-      this.agents.set(spec.id, new Agent(spec, () => this.emit('state'), line => log('agents', line)))
+    for (const spec of builtInAgentSpecs()) {
+      this.upsert(spec, true)
     }
+    for (const spec of loadUserAgentSpecs()) {
+      this.upsert(spec, false)
+    }
+    this.watchUserSpecs()
+  }
+
+  /** Register or refresh one agent, rebuilding it when its spec changed. */
+  private upsert(spec: AgentSpec, builtin: boolean): void {
+    const existing = this.agents.get(spec.id)
+    if (existing && existing.builtin === builtin && JSON.stringify(existing.spec) === JSON.stringify(spec)) {
+      return
+    }
+    if (existing) {
+      void existing.stop().catch(() => undefined)
+    }
+    const agent = new Agent(spec, builtin, () => this.emit('state'), line => log('agents', line))
+    this.agents.set(spec.id, agent)
+  }
+
+  /** Hot-reload `~/.config/veritas-os/agents.json` when the user edits it by hand. */
+  private watchUserSpecs(): void {
+    const watcher = fs.watchFile(userAgentsPath(), { interval: 1000 }, () => this.reconcileUserSpecs())
+    watcher.unref()
+  }
+
+  /** Re-read the user config and reconcile the live set with it (adds, updates, removes). */
+  private reconcileUserSpecs(): void {
+    const seen = new Set<string>()
+    for (const spec of loadUserAgentSpecs()) {
+      seen.add(spec.id)
+      this.upsert(spec, false)
+    }
+    for (const [id, agent] of [...this.agents.entries()]) {
+      if (!agent.builtin && !seen.has(id)) {
+        void agent.stop().catch(() => undefined)
+        this.agents.delete(id)
+      }
+    }
+    this.emit('state')
+  }
+
+  /** Persist the user spec list back to `~/.config/veritas-os/agents.json`. */
+  private writeUserSpecs(specs: AgentSpec[]): void {
+    const file = userAgentsPath()
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, `${JSON.stringify(specs, null, 2)}\n`, 'utf8')
   }
 
   list(): AgentSnapshot[] {
     return [...this.agents.values()].map(agent => agent.snapshot())
+  }
+
+  /** Missions the shell has handed to non-Hermes agents, newest first. */
+  listMissions(): ShellMission[] {
+    return [...this.missions.values()].sort((a, b) => b.startedAt - a.startedAt)
   }
 
   async start(id: string): Promise<void> {
@@ -393,6 +482,28 @@ export class AgentManager extends EventEmitter {
     const [command, ...args] = spec.runCommand.map(part => part.replace(/\{(\w+)\}/g, (_, key: string) => vars[key] ?? ''))
     const child = spawn(command ?? '', args, { detached: true, stdio: 'ignore', env: { ...process.env } })
     child.unref()
+
+    // Track it so the Missions page shows every agent's work, not just Hermes's.
+    const mission: ShellMission = {
+      id: `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      agentId: id,
+      agentName: spec.name,
+      goal: trimmed,
+      status: 'running',
+      startedAt: Date.now()
+    }
+    this.missions.set(mission.id, mission)
+    child.on('exit', code => {
+      const tracked = this.missions.get(mission.id)
+
+      if (tracked) {
+        tracked.status = code === 0 ? 'completed' : 'failed'
+        tracked.finishedAt = Date.now()
+        this.emit('missions')
+      }
+    })
+    this.emit('missions')
+
     log('agents', `${spec.id} running a mission: ${trimmed.slice(0, 80)}`)
   }
 
@@ -420,6 +531,31 @@ export class AgentManager extends EventEmitter {
         resolve({ links: [...new Set(links)], output })
       })
     })
+  }
+
+  /** Add (or replace) a user agent, persist it, and start it when asked. */
+  async add(input: AgentSpec): Promise<void> {
+    const clean = sanitizeSpec(input)
+    const specs = loadUserAgentSpecs().filter(existing => existing.id !== clean.id)
+    specs.push(clean)
+    this.writeUserSpecs(specs)
+    this.upsert(clean, false)
+    if (clean.defaultEnabled) {
+      void this.agents.get(clean.id)?.start().catch(() => undefined)
+    }
+    this.emit('state')
+  }
+
+  /** Remove a user agent: stop it, drop it from the config, and forget it. */
+  async remove(id: string): Promise<void> {
+    const agent = this.agents.get(id)
+    if (!agent || agent.builtin) {
+      throw new Error(`agent ${id} cannot be removed`)
+    }
+    this.writeUserSpecs(loadUserAgentSpecs().filter(existing => existing.id !== id))
+    await agent.stop().catch(() => undefined)
+    this.agents.delete(id)
+    this.emit('state')
   }
 
   async startDefaults(): Promise<void> {

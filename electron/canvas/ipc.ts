@@ -1,4 +1,4 @@
-import { BrowserWindow, clipboard, ClipboardItem, dialog, ipcMain, type WebContents } from 'electron'
+import { BrowserWindow, clipboard, dialog, ipcMain, nativeImage, type WebContents } from 'electron'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import os from 'node:os'
@@ -369,7 +369,7 @@ export function registerCanvasIpc(getWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle(IPC.canvasCopyImage, async (_event, image: CanvasRawImage) => {
     const png = encodePng({ width: image.width, height: image.height, channels: image.channels === 1 ? 1 : 4, data: image.data })
-    await clipboard.write([new ClipboardItem({ 'image/png': new Blob([new Uint8Array(png)], { type: 'image/png' }) })])
+    clipboard.writeImage(nativeImage.createFromBuffer(png))
     // Read back the way Paste reads, so the comparison holds however the system stores images.
     ownCopy = digestOf(await clipboardImage())
   })
@@ -392,22 +392,19 @@ const digestOf = (bytes: Uint8Array | null): string | null => (bytes ? crypto.cr
 
 /** The clipboard's image as PNG bytes, or null when it holds none. */
 async function clipboardImage(): Promise<Uint8Array | null> {
-  for (const item of await clipboard.read()) {
-    const type = item.types.find((entry) => entry === 'image/png') ?? item.types.find((entry) => entry.startsWith('image/'))
+  const image = clipboard.readImage()
 
-    if (type) {
-      const blob = (await item.getType(type)) as Blob
-      const bytes = new Uint8Array(await blob.arrayBuffer())
-
-      if (bytes.byteLength > MAX_IMAGE_BYTES) {
-        throw new Error('The image on the clipboard is too large')
-      }
-
-      return bytes
-    }
+  if (image.isEmpty()) {
+    return null
   }
 
-  return null
+  const bytes = image.toPNG()
+
+  if (bytes.byteLength > MAX_IMAGE_BYTES) {
+    throw new Error('The image on the clipboard is too large')
+  }
+
+  return bytes
 }
 
 /** What each Canvas window has open, by its web contents. */

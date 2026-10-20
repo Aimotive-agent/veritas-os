@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { clipboard, ClipboardItem, ipcMain, nativeImage, systemPreferences } from 'electron'
+import { clipboard, ipcMain, nativeImage, systemPreferences } from 'electron'
 import { type CaptureTool, type CaptureToolResult, IPC, type RecordingState, type ScreenshotMode } from '../../shared/ipc.ts'
 import { log } from '../log.ts'
 import { run } from '../platform/exec.ts'
@@ -326,7 +326,7 @@ export function registerCaptureIpc(onRecording: (state: RecordingState) => void)
       throw new Error('There is no image to copy')
     }
 
-    await clipboard.write([new ClipboardItem({ 'image/png': new Blob([new Uint8Array(image.toPNG())], { type: 'image/png' }) })])
+    clipboard.writeImage(image)
   })
   ipcMain.handle(IPC.cameraRequest, async () => (process.platform === 'darwin' ? systemPreferences.askForMediaAccess('camera') : true))
 }
