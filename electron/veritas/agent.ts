@@ -12,7 +12,6 @@ import { log } from '../log.ts'
  * -> the reply out. The agent itself (prompt, MCP tools) lives in OpenCode's config.
  */
 
-const SESSION = 'veritas'
 const TIMEOUT_MS = 300_000
 const MAX_REPLY = 4000
 
@@ -93,7 +92,7 @@ export class VeritasAgent extends EventEmitter {
 
     try {
       const output = await new Promise<string>((resolve, reject) => {
-        execFile('opencode', ['run', '--agent', 'veritas', '--model', this.config.model, '--session', SESSION, '--auto', prompt], { timeout: TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+        execFile('opencode', ['run', '--agent', 'veritas', '--model', this.config.model, '--auto', prompt], { timeout: TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
           const text = (stdout || '').trim()
 
           if (error) {
@@ -110,7 +109,9 @@ export class VeritasAgent extends EventEmitter {
 
       return reply || '(no output)'
     } catch (error) {
-      this.lastError = error instanceof Error ? error.message : String(error)
+      const message = error instanceof Error ? error.message : String(error)
+      this.lastError = message
+      log('veritas', `error: ${message.slice(0, 300)}`)
       throw error
     } finally {
       this.busy = false
