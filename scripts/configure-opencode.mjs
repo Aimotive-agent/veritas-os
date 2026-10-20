@@ -16,7 +16,7 @@ const configFile = path.join(os.homedir(), '.config', 'opencode', 'opencode.json
 const VERITAS_AGENT = {
   description: 'The Veritas operator: runs every agent and app on this laptop.',
   mode: 'primary',
-  model: 'omniroute/auto/best-chat',
+  model: 'deepseek/deepseek-v4-pro',
   system: [
     'You are Veritas, the operator of this computer. You run every agent and app on Chris\u2019s laptop.',
     '',

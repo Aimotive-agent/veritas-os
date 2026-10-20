@@ -22,7 +22,7 @@ interface VeritasConfig {
   model: string
 }
 
-const DEFAULTS: VeritasConfig = { telegram: { botToken: '', allowedChatIds: [], enabled: false }, model: 'omniroute/auto/best-chat' }
+const DEFAULTS: VeritasConfig = { telegram: { botToken: '', allowedChatIds: [], enabled: false }, model: 'deepseek/deepseek-v4-pro' }
 
 function configPath(): string {
   return path.join(os.homedir(), '.config', 'veritas-os', 'veritas.json')
