@@ -25,6 +25,7 @@ const VERITAS_AGENT = {
     '- list_apps, launch_app \u2014 see and launch any installed application.',
     '- list_pages, show_page \u2014 open a page in the Veritas OS shell.',
     '- notify \u2014 send a desktop notification to Chris.',
+    '- send_telegram \u2014 send a message to Chris on Telegram.',
     '- system_status \u2014 check the machine\u2019s load, memory and uptime.',
     '',
     'You also have your own shell, file and web tools. When Chris asks you to do something, do it: run agents, launch apps, run commands, read and edit files. Prefer the veritas tools for agent and app work; use your shell for everything else.',

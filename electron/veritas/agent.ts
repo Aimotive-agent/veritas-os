@@ -12,7 +12,7 @@ import { log } from '../log.ts'
  * -> the reply out. The agent itself (prompt, MCP tools) lives in OpenCode's config.
  */
 
-const TIMEOUT_MS = 300_000
+const TIMEOUT_MS = 180_000
 const MAX_REPLY = 4000
 
 interface VeritasConfig {

@@ -38,6 +38,7 @@ import { VeritasAgent } from './veritas/agent.ts'
 import { registerVeritasIpc } from './ipc/veritas.ts'
 import { registerOpencodeIpc } from './ipc/opencode.ts'
 import { VeritasTelegram } from './veritas/telegram.ts'
+import { sendTelegram } from './veritas/send-telegram.ts'
 import { log, logTail } from './log.ts'
 import { migrateLegacyData } from './migrate.ts'
 import { registerNotificationHistoryIpc } from './notifications-history.ts'
@@ -209,7 +210,8 @@ const veritasMcp = new VeritasMcpServer(agents, {
     if (Notification.isSupported()) {
       new Notification({ title: String(title).slice(0, 120), body: String(body).slice(0, 400), silent: true }).show()
     }
-  }
+  },
+  sendTelegram: text => sendTelegram(text)
 })
 const crashes = new CrashWatcher(
   report => toHermesWindow({ type: 'crash', payload: { ...report } }),

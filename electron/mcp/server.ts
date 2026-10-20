@@ -24,6 +24,7 @@ const stringArg = (args: Record<string, unknown>, key: string): string => (typeo
 interface VeritasShell {
   showPage: (page: string) => void
   notify: (title: string, body: string) => void
+  sendTelegram: (text: string) => Promise<string>
 }
 
 const SHELL_PAGES = ['overview', 'hermes', 'veritas', 'agents', 'browser', 'missions', 'memory', 'files', 'automations', 'connections', 'settings']
@@ -277,6 +278,16 @@ export class VeritasMcpServer {
           if (!title) return 'Error: title is required.'
           shell.notify(title, body || title)
           return 'Notification shown.'
+        }
+      },
+      {
+        name: 'send_telegram',
+        description: 'Send a message to Chris on Telegram.',
+        inputSchema: { type: 'object', properties: { message: { type: 'string' } }, required: ['message'] },
+        run: async args => {
+          const message = stringArg(args, 'message')
+          if (!message) return 'Error: message is required.'
+          return shell.sendTelegram(message)
         }
       }
     ]
