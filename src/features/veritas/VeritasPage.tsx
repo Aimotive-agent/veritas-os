@@ -93,6 +93,10 @@ export function VeritasPage() {
             <IconBrandTelegram size={14} />
             {status?.telegramEnabled ? 'Telegram on' : 'Telegram off'}
           </span>
+          <span>·</span>
+          <span className="truncate" title="The agent's persistent session — this is its memory">
+            session {status?.sessionId ?? '…'}
+          </span>
           {status?.lastError ? <span className="truncate text-danger">· {status.lastError}</span> : null}
         </div>
 

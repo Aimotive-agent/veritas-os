@@ -20,9 +20,27 @@ interface VeritasConfig {
   telegram: { botToken: string; allowedChatIds: number[]; enabled: boolean }
   /** Model the Veritas agent runs on (passed to `opencode run --model`). */
   model: string
+  /** The agent's session. OpenCode ids must start with "ses"; keeping it stable is what gives the agent memory. */
+  sessionId: string
 }
 
-const DEFAULTS: VeritasConfig = { telegram: { botToken: '', allowedChatIds: [], enabled: false }, model: 'deepseek/deepseek-v4-pro' }
+/** A fresh OpenCode session id (they must start with "ses"). */
+function newSessionId(): string {
+  const alphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+  let id = ''
+
+  for (let i = 0; i < 24; i++) {
+    id += alphabet[Math.floor(Math.random() * alphabet.length)]
+  }
+
+  return `ses_${id}`
+}
+
+const DEFAULTS: VeritasConfig = {
+  telegram: { botToken: '', allowedChatIds: [], enabled: false },
+  model: 'deepseek/deepseek-v4-pro',
+  sessionId: newSessionId()
+}
 
 function configPath(): string {
   return path.join(os.homedir(), '.config', 'veritas-os', 'veritas.json')
@@ -31,12 +49,23 @@ function configPath(): string {
 function loadConfig(): VeritasConfig {
   try {
     const raw = JSON.parse(fs.readFileSync(configPath(), 'utf8')) as Partial<VeritasConfig>
-    return {
+    const sessionId = typeof raw.sessionId === 'string' && raw.sessionId.startsWith('ses') ? raw.sessionId : DEFAULTS.sessionId
+    const config: VeritasConfig = {
       telegram: { ...DEFAULTS.telegram, ...(raw.telegram ?? {}) },
-      model: typeof raw.model === 'string' && raw.model.trim() ? raw.model : DEFAULTS.model
+      model: typeof raw.model === 'string' && raw.model.trim() ? raw.model : DEFAULTS.model,
+      sessionId
     }
+
+    if (sessionId !== raw.sessionId) {
+      // First run: keep the session id, so the agent's memory survives a restart.
+      persist(config)
+    }
+
+    return config
   } catch {
-    return { telegram: { ...DEFAULTS.telegram }, model: DEFAULTS.model }
+    const config: VeritasConfig = { telegram: { ...DEFAULTS.telegram }, model: DEFAULTS.model, sessionId: DEFAULTS.sessionId }
+    persist(config)
+    return config
   }
 }
 
@@ -60,6 +89,7 @@ export class VeritasAgent extends EventEmitter {
       telegramConfigured: Boolean(this.config.telegram.botToken.trim() && this.config.telegram.allowedChatIds.length > 0),
       telegramEnabled: this.config.telegram.enabled,
       allowedChatIds: [...this.config.telegram.allowedChatIds],
+      sessionId: this.config.sessionId,
       busy: this.busy,
       ...(this.lastError ? { lastError: this.lastError } : {})
     }
@@ -68,7 +98,8 @@ export class VeritasAgent extends EventEmitter {
   configure(patch: { telegram?: Partial<VeritasConfig['telegram']>; model?: string }): VeritasStatus {
     this.config = {
       telegram: { ...this.config.telegram, ...(patch.telegram ?? {}) },
-      model: patch.model?.trim() ? patch.model : this.config.model
+      model: patch.model?.trim() ? patch.model : this.config.model,
+      sessionId: this.config.sessionId
     }
     persist(this.config)
     this.emit('changed')
@@ -132,7 +163,7 @@ export class VeritasAgent extends EventEmitter {
       // spawn, not execFile: execFile's output-capture path leaves the OpenCode CLI waiting, and the
       // request then times out with no output at all. spawn with an ignored stdin gives the CLI an
       // immediate EOF and the reply arrives in seconds.
-      const child = spawn(bin, ['run', '--agent', 'veritas', '--model', this.config.model, '--auto', prompt], {
+      const child = spawn(bin, ['run', '--agent', 'veritas', '--model', this.config.model, '--session', this.config.sessionId, '--auto', prompt], {
         cwd: os.homedir(),
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe']

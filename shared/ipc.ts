@@ -1154,6 +1154,8 @@ export interface VeritasStatus {
   telegramEnabled: boolean
   /** Which Telegram user ids may talk to Veritas (the bot token is never sent to the shell). */
   allowedChatIds: number[]
+  /** The agent's OpenCode session. It is persistent, which is what gives the agent its memory. */
+  sessionId: string
   busy: boolean
   lastError?: string
 }
