@@ -212,7 +212,10 @@ const veritasMcp = new VeritasMcpServer(agents, {
       new Notification({ title: String(title).slice(0, 120), body: String(body).slice(0, 400), silent: true }).show()
     }
   },
-  sendTelegram: text => sendTelegram(text)
+  sendTelegram: text => sendTelegram(text),
+  openUrl: url => {
+    void shell.openExternal(url)
+  }
 })
 const crashes = new CrashWatcher(
   report => toHermesWindow({ type: 'crash', payload: { ...report } }),

@@ -1,6 +1,7 @@
 import http from 'node:http'
 import os from 'node:os'
 import type { AgentManager } from '../agents/manager.ts'
+import { createCeoTools } from '../ceo/tools.ts'
 import { hostPlatform } from '../platform/index.ts'
 import { log } from '../log.ts'
 
@@ -25,6 +26,7 @@ interface VeritasShell {
   showPage: (page: string) => void
   notify: (title: string, body: string) => void
   sendTelegram: (text: string) => Promise<string>
+  openUrl: (url: string) => void
 }
 
 const SHELL_PAGES = ['overview', 'hermes', 'veritas', 'agents', 'browser', 'missions', 'memory', 'files', 'automations', 'connections', 'settings']
@@ -289,7 +291,9 @@ export class VeritasMcpServer {
           if (!message) return 'Error: message is required.'
           return shell.sendTelegram(message)
         }
-      }
+      },
+      // The everyday toolkit: files, shell, processes, clipboard, notes, browser.
+      ...createCeoTools({ openUrl: url => shell.openUrl(url) })
     ]
   }
 }
