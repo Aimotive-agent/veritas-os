@@ -37,6 +37,7 @@ import { VeritasMcpServer } from './mcp/server.ts'
 import { VeritasAgent } from './veritas/agent.ts'
 import { registerVeritasIpc } from './ipc/veritas.ts'
 import { registerOpencodeIpc } from './ipc/opencode.ts'
+import { refreshOpencodeMcpCatalog } from './opencode.ts'
 import { VeritasTelegram } from './veritas/telegram.ts'
 import { sendTelegram } from './veritas/send-telegram.ts'
 import { log, logTail } from './log.ts'
@@ -425,6 +426,8 @@ app.whenReady().then(async () => {
   shellAutomations.start()
   veritasTelegram.apply(veritasAgent.getTelegramConfig())
   veritasMcp.start()
+  // OpenCode caches the MCP tool list; make it re-read ours so new tools are visible.
+  refreshOpencodeMcpCatalog()
 })
 
 app.on('second-instance', () => {

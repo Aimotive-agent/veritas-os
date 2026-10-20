@@ -66,3 +66,22 @@ if (config.agent?.veritas) {
 
 fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
 console.log(`Added \`veritas\` MCP server (http://127.0.0.1:${PORT}/mcp) and \`veritas\` agent to ${configFile}`)
+
+// OpenCode caches each MCP server's tool list and only re-reads it when the server's config entry
+// changes, so a new tool stays invisible to the agent (it searches for it forever). Toggling the
+// entry forces a reconnect and a fresh tool list.
+config.mcp.servers.veritas.disabled = true
+fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
+
+setTimeout(() => {
+  try {
+    const next = JSON.parse(fs.readFileSync(configFile, 'utf8'))
+    if (next.mcp?.servers?.veritas) {
+      delete next.mcp.servers.veritas.disabled
+      fs.writeFileSync(configFile, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+      console.log('Refreshed the veritas MCP tool catalog in OpenCode.')
+    }
+  } catch {
+    // The config changed under us; leave it alone.
+  }
+}, 4000)

@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { OpencodeMcpServer } from '../shared/ipc.ts'
+import { log } from './log.ts'
 
 /*
  * Reads OpenCode's configured MCP servers (~/.config/opencode/opencode.json) so the Connections
@@ -41,4 +42,50 @@ export function listOpencodeMcpServers(): OpencodeMcpServer[] {
   } catch {
     return []
   }
+}
+
+/**
+ * The OpenCode service caches each MCP server's tool list and only re-reads it when that server's
+ * config entry changes. Veritas OS gains tools over time, so a stale cache leaves the agent unable
+ * to find them: it searches for the tool forever and the request times out. Toggling the entry
+ * forces a reconnect, and the client re-enumerates the tools.
+ */
+export function refreshOpencodeMcpCatalog(): void {
+  const file = path.join(os.homedir(), '.config', 'opencode', 'opencode.json')
+  let config: { mcp?: { servers?: Record<string, { disabled?: boolean }> } }
+
+  try {
+    config = JSON.parse(fs.readFileSync(file, 'utf8')) as typeof config
+  } catch {
+    return
+  }
+
+  if (!config.mcp?.servers?.veritas) {
+    return
+  }
+
+  try {
+    config.mcp.servers.veritas.disabled = true
+    fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
+  } catch (error) {
+    log('opencode', `could not pause the veritas MCP entry: ${error instanceof Error ? error.message : String(error)}`)
+
+    return
+  }
+
+  // Give OpenCode a moment to notice the server is gone before re-enabling it.
+  setTimeout(() => {
+    try {
+      const next = JSON.parse(fs.readFileSync(file, 'utf8')) as typeof config
+      const entry = next.mcp?.servers?.veritas
+
+      if (entry) {
+        delete entry.disabled
+        fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+        log('opencode', 'refreshed the veritas MCP tool catalog')
+      }
+    } catch {
+      // The config changed under us; leave it alone.
+    }
+  }, 4000)
 }

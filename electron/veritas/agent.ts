@@ -96,7 +96,10 @@ export class VeritasAgent extends EventEmitter {
           const text = (stdout || '').trim()
 
           if (error) {
-            reject(new Error(text || stderr.trim() || error.message))
+            const detail = (stderr || '').trim()
+            const killed = Boolean((error as { killed?: boolean }).killed)
+
+            reject(new Error(detail || (killed ? `timed out after ${TIMEOUT_MS / 1000}s` : error.message)))
             return
           }
 
