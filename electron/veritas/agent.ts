@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -92,26 +92,7 @@ export class VeritasAgent extends EventEmitter {
     this.emit('changed')
 
     try {
-      const bin = opencodeBin()
-      log('veritas', `running the agent via ${bin}`)
-
-      const output = await new Promise<string>((resolve, reject) => {
-        execFile(bin, ['run', '--agent', 'veritas', '--model', this.config.model, '--auto', prompt], { timeout: TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
-          const text = (stdout || '').trim()
-
-          if (error) {
-            const detail = (stderr || '').trim()
-            const killed = Boolean((error as { killed?: boolean }).killed)
-
-            reject(new Error(detail || (killed ? `timed out after ${TIMEOUT_MS / 1000}s` : error.message)))
-            return
-          }
-
-          resolve(text)
-        })
-      })
-
-      const reply = output.slice(0, MAX_REPLY)
+      const reply = (await this.run(prompt)).slice(0, MAX_REPLY)
       log('veritas', `replied: ${reply.slice(0, 120)}`)
 
       return reply || '(no output)'
@@ -124,5 +105,73 @@ export class VeritasAgent extends EventEmitter {
       this.busy = false
       this.emit('changed')
     }
+  }
+
+  /**
+   * Prove the whole agent path works — binary, model, session, reply. Run at startup so a broken
+   * setup shows up in the log at once instead of at the first request.
+   */
+  async selfTest(): Promise<boolean> {
+    try {
+      const reply = (await this.run('Reply with the single word: ok')).slice(0, 120)
+      log('veritas', `self test ok: ${reply}`)
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      log('veritas', `self test failed: ${message.slice(0, 300)}`)
+      return false
+    }
+  }
+
+  /** Run one prompt through OpenCode and resolve with its reply. */
+  private run(prompt: string): Promise<string> {
+    const bin = opencodeBin()
+    log('veritas', `running the agent via ${bin}`)
+
+    return new Promise<string>((resolve, reject) => {
+      // spawn, not execFile: execFile's output-capture path leaves the OpenCode CLI waiting, and the
+      // request then times out with no output at all. spawn with an ignored stdin gives the CLI an
+      // immediate EOF and the reply arrives in seconds.
+      const child = spawn(bin, ['run', '--agent', 'veritas', '--model', this.config.model, '--auto', prompt], {
+        cwd: os.homedir(),
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+
+      let stdout = ''
+      let stderr = ''
+      child.stdout?.setEncoding('utf8')
+      child.stderr?.setEncoding('utf8')
+      child.stdout?.on('data', chunk => {
+        stdout += chunk
+      })
+      child.stderr?.on('data', chunk => {
+        stderr += chunk
+      })
+
+      const kill = setTimeout(() => {
+        child.kill('SIGKILL')
+        reject(new Error(`timed out after ${TIMEOUT_MS / 1000}s`))
+      }, TIMEOUT_MS)
+
+      child.on('error', error => {
+        clearTimeout(kill)
+        reject(error)
+      })
+
+      child.on('close', (code, signal) => {
+        clearTimeout(kill)
+        const text = stdout.trim()
+
+        if (code === 0) {
+          resolve(text || '(no output)')
+
+          return
+        }
+
+        const detail = stderr.trim()
+        reject(new Error(detail || text || `opencode exited with code ${code}${signal ? ` (${signal})` : ''}`))
+      })
+    })
   }
 }

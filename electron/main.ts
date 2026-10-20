@@ -431,6 +431,8 @@ app.whenReady().then(async () => {
   veritasMcp.start()
   // OpenCode caches the MCP tool list; make it re-read ours so new tools are visible.
   refreshOpencodeMcpCatalog()
+  // Prove the agent path works now, not at the first request.
+  void veritasAgent.selfTest()
 })
 
 app.on('second-instance', () => {
