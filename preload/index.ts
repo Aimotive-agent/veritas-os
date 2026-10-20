@@ -443,7 +443,7 @@ const api = {
   veritas: {
     status: (): Promise<VeritasStatus> => ipcRenderer.invoke(IPC.veritasStatus),
     ask: (text: string): Promise<string> => ipcRenderer.invoke(IPC.veritasAsk, text),
-    configure: (patch: { telegram?: { botToken?: string; allowedChatIds?: number[]; enabled?: boolean } }): Promise<VeritasStatus> => ipcRenderer.invoke(IPC.veritasConfigure, patch),
+    configure: (patch: { telegram?: { botToken?: string; allowedChatIds?: number[]; enabled?: boolean }; model?: string }): Promise<VeritasStatus> => ipcRenderer.invoke(IPC.veritasConfigure, patch),
     onChanged: (listener: (status: VeritasStatus) => void): Unsubscribe => subscribe<VeritasStatus>(IPC.veritasChanged, listener)
   },
   /** Missions the shell handed to non-Hermes agents (shown in the Missions page). */

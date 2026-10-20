@@ -18,9 +18,11 @@ const MAX_REPLY = 4000
 
 interface VeritasConfig {
   telegram: { botToken: string; allowedChatIds: number[]; enabled: boolean }
+  /** Model the Veritas agent runs on (passed to `opencode run --model`). */
+  model: string
 }
 
-const DEFAULTS: VeritasConfig = { telegram: { botToken: '', allowedChatIds: [], enabled: false } }
+const DEFAULTS: VeritasConfig = { telegram: { botToken: '', allowedChatIds: [], enabled: false }, model: 'omniroute/auto/best-chat' }
 
 function configPath(): string {
   return path.join(os.homedir(), '.config', 'veritas-os', 'veritas.json')
@@ -29,9 +31,12 @@ function configPath(): string {
 function loadConfig(): VeritasConfig {
   try {
     const raw = JSON.parse(fs.readFileSync(configPath(), 'utf8')) as Partial<VeritasConfig>
-    return { telegram: { ...DEFAULTS.telegram, ...(raw.telegram ?? {}) } }
+    return {
+      telegram: { ...DEFAULTS.telegram, ...(raw.telegram ?? {}) },
+      model: typeof raw.model === 'string' && raw.model.trim() ? raw.model : DEFAULTS.model
+    }
   } catch {
-    return { telegram: { ...DEFAULTS.telegram } }
+    return { telegram: { ...DEFAULTS.telegram }, model: DEFAULTS.model }
   }
 }
 
@@ -60,8 +65,11 @@ export class VeritasAgent extends EventEmitter {
     }
   }
 
-  configure(patch: { telegram?: Partial<VeritasConfig['telegram']> }): VeritasStatus {
-    this.config = { telegram: { ...this.config.telegram, ...(patch.telegram ?? {}) } }
+  configure(patch: { telegram?: Partial<VeritasConfig['telegram']>; model?: string }): VeritasStatus {
+    this.config = {
+      telegram: { ...this.config.telegram, ...(patch.telegram ?? {}) },
+      model: patch.model?.trim() ? patch.model : this.config.model
+    }
     persist(this.config)
     this.emit('changed')
     return this.status()
@@ -85,7 +93,7 @@ export class VeritasAgent extends EventEmitter {
 
     try {
       const output = await new Promise<string>((resolve, reject) => {
-        execFile('opencode', ['run', '--agent', 'veritas', '--session', SESSION, '--auto', prompt], { timeout: TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+        execFile('opencode', ['run', '--agent', 'veritas', '--model', this.config.model, '--session', SESSION, '--auto', prompt], { timeout: TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
           const text = (stdout || '').trim()
 
           if (error) {

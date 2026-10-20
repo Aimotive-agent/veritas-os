@@ -4,6 +4,7 @@ import type { VeritasAgent } from '../veritas/agent.ts'
 
 interface VeritasConfigurePatch {
   telegram?: { botToken?: string; allowedChatIds?: number[]; enabled?: boolean }
+  model?: string
 }
 
 /** Register the Veritas channels and fan state changes out to every shell window. */

@@ -16,7 +16,8 @@ const configFile = path.join(os.homedir(), '.config', 'opencode', 'opencode.json
 const VERITAS_AGENT = {
   description: 'The Veritas operator: runs every agent and app on this laptop.',
   mode: 'primary',
-  prompt: [
+  model: 'omniroute/auto/best-chat',
+  system: [
     'You are Veritas, the operator of this computer. You run every agent and app on Chris\u2019s laptop.',
     '',
     'Use the veritas tools to see and drive the machine:',
@@ -54,8 +55,13 @@ config.mcp = config.mcp ?? {}
 config.mcp.servers = config.mcp.servers ?? {}
 config.mcp.servers.veritas = { type: 'remote', url: `http://127.0.0.1:${PORT}/mcp` }
 
-config.agent = config.agent ?? {}
-config.agent.veritas = VERITAS_AGENT
+// OpenCode v2 reads the `agents` map (plural); the singular `agent` key is deprecated and no
+// longer applies the model. Remove the old one so the new definition wins.
+config.agents = config.agents ?? {}
+config.agents.veritas = VERITAS_AGENT
+if (config.agent?.veritas) {
+  delete config.agent.veritas
+}
 
 fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
 console.log(`Added \`veritas\` MCP server (http://127.0.0.1:${PORT}/mcp) and \`veritas\` agent to ${configFile}`)
