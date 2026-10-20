@@ -109,7 +109,7 @@ export class VeritasTelegram {
       reply = this.agentStatus()
     } else {
       try {
-        reply = await this.agent.ask(text)
+        reply = await this.agent.ask(text, 'telegram')
       } catch (error) {
         reply = `⚠️ ${error instanceof Error ? error.message : String(error)}`
       }

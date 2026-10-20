@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import type { VeritasStatus } from '../../shared/ipc.ts'
+import type { VeritasEntry, VeritasStatus } from '../../shared/ipc.ts'
 import { log } from '../log.ts'
 import { opencodeBin } from '../opencode.ts'
 
@@ -46,6 +46,28 @@ function configPath(): string {
   return path.join(os.homedir(), '.config', 'veritas-os', 'veritas.json')
 }
 
+const MAX_TRANSCRIPT = 500
+
+function transcriptPath(): string {
+  return path.join(os.homedir(), '.config', 'veritas-os', 'transcript.json')
+}
+
+/** The shared conversation: the page and Telegram are one thread, kept on disk so it survives restarts. */
+function loadTranscript(): VeritasEntry[] {
+  try {
+    const raw = JSON.parse(fs.readFileSync(transcriptPath(), 'utf8')) as VeritasEntry[]
+    return Array.isArray(raw) ? raw.slice(-MAX_TRANSCRIPT) : []
+  } catch {
+    return []
+  }
+}
+
+function saveTranscript(entries: VeritasEntry[]): void {
+  const file = transcriptPath()
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify(entries.slice(-MAX_TRANSCRIPT), null, 2), 'utf8')
+}
+
 function loadConfig(): VeritasConfig {
   try {
     const raw = JSON.parse(fs.readFileSync(configPath(), 'utf8')) as Partial<VeritasConfig>
@@ -77,6 +99,7 @@ function persist(config: VeritasConfig): void {
 
 export class VeritasAgent extends EventEmitter {
   private config = loadConfig()
+  private transcript = loadTranscript()
   private busy = false
   private lastError: string | undefined
 
@@ -90,6 +113,7 @@ export class VeritasAgent extends EventEmitter {
       telegramEnabled: this.config.telegram.enabled,
       allowedChatIds: [...this.config.telegram.allowedChatIds],
       sessionId: this.config.sessionId,
+      transcript: [...this.transcript],
       busy: this.busy,
       ...(this.lastError ? { lastError: this.lastError } : {})
     }
@@ -107,7 +131,7 @@ export class VeritasAgent extends EventEmitter {
   }
 
   /** Send one message to the Veritas agent and return its reply. */
-  async ask(text: string): Promise<string> {
+  async ask(text: string, source: VeritasEntry['source'] = 'app'): Promise<string> {
     const prompt = text.trim()
 
     if (!prompt) {
@@ -121,21 +145,31 @@ export class VeritasAgent extends EventEmitter {
     this.busy = true
     this.lastError = undefined
     this.emit('changed')
+    this.push({ role: 'user', text: prompt, ts: Date.now(), source })
 
     try {
       const reply = (await this.run(prompt)).slice(0, MAX_REPLY)
+      this.push({ role: 'assistant', text: reply || '(no output)', ts: Date.now(), source })
       log('veritas', `replied: ${reply.slice(0, 120)}`)
 
       return reply || '(no output)'
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.lastError = message
+      this.push({ role: 'assistant', text: `⚠️ ${message}`, ts: Date.now(), source })
       log('veritas', `error: ${message.slice(0, 300)}`)
       throw error
     } finally {
       this.busy = false
       this.emit('changed')
     }
+  }
+
+  /** Add a line to the shared conversation and persist it. */
+  private push(entry: VeritasEntry): void {
+    this.transcript = [...this.transcript, entry].slice(-MAX_TRANSCRIPT)
+    saveTranscript(this.transcript)
+    this.emit('changed')
   }
 
   /**

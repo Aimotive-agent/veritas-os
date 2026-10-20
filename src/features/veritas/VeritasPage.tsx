@@ -1,29 +1,25 @@
-import { IconBrandTelegram, IconClearAll, IconSend, IconSettings, IconTerminal2 } from '@tabler/icons-react'
+import { IconBrandTelegram, IconRefresh, IconSend, IconSettings, IconTerminal2 } from '@tabler/icons-react'
 import { useEffect, useRef, useState } from 'react'
 import { GlassButton, GlassCard, PageHeader, Pill, Toggle } from '../../components/ui/glass.tsx'
-import type { VeritasStatus } from '../../../shared/ipc.ts'
+import type { VeritasEntry, VeritasStatus } from '../../../shared/ipc.ts'
 import { notify } from '../../store/notifications.ts'
 import { showPage } from '../../store/windows.ts'
+import { cn } from '../../lib/cn.ts'
 import { FieldLabel, Hint, TextInput } from '../automations/presentation.tsx'
 
 /*
- * Veritas — the main control panel. A CLI-style chat with the OpenCode-backed Veritas agent: type
- * a task, it runs agents, launches apps and drives the machine, and the reply lands right here.
- * The Telegram channel (below the fold) reaches the same agent from your phone.
+ * Veritas: OpenCode as the operator of the whole OS. The conversation is shared with Telegram and
+ * kept on disk, so the page always shows the same thread the agent remembers.
  */
-
-interface Line {
-  role: 'user' | 'assistant'
-  text: string
-}
 
 export function VeritasPage() {
   const [status, setStatus] = useState<VeritasStatus | null>(null)
-  const [lines, setLines] = useState<Line[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [showSetup, setShowSetup] = useState(false)
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const transcriptRef = useRef<HTMLDivElement>(null)
+
+  const transcript = status?.transcript ?? []
 
   useEffect(() => {
     void window.heraldOS.veritas.status().then(setStatus)
@@ -31,12 +27,12 @@ export function VeritasPage() {
   }, [])
 
   useEffect(() => {
-    const el = scrollRef.current
+    const el = transcriptRef.current
 
     if (el) {
       el.scrollTop = el.scrollHeight
     }
-  }, [lines, busy])
+  }, [transcript.length, busy])
 
   const send = async () => {
     const text = input.trim()
@@ -45,15 +41,13 @@ export function VeritasPage() {
       return
     }
 
-    setLines(current => [...current, { role: 'user', text }])
     setInput('')
     setBusy(true)
 
     try {
-      const reply = await window.heraldOS.veritas.ask(text)
-      setLines(current => [...current, { role: 'assistant', text: reply }])
+      // The agent records both sides of the exchange, so we do not add it here.
+      await window.heraldOS.veritas.ask(text)
     } catch (error) {
-      setLines(current => [...current, { role: 'assistant', text: `⚠️ ${error instanceof Error ? error.message : String(error)}` }])
       notify({ title: 'Veritas could not answer', body: error instanceof Error ? error.message : String(error), level: 'error' })
     } finally {
       setBusy(false)
@@ -65,14 +59,11 @@ export function VeritasPage() {
       <PageHeader
         icon="terminal"
         title="Veritas"
-        subtitle="The operator — run every agent and app from here."
+        subtitle="OpenCode, operating every agent and app on this laptop."
         actions={
           <>
             <GlassButton variant="ghost" onClick={() => setShowSetup(current => !current)}>
               <IconSettings /> {showSetup ? 'Hide setup' : 'Setup'}
-            </GlassButton>
-            <GlassButton variant="ghost" onClick={() => setLines([])}>
-              <IconClearAll /> Clear
             </GlassButton>
             <GlassButton variant="primary" onClick={() => showPage('agent:opencode')}>
               <IconTerminal2 /> Open OpenCode
@@ -100,28 +91,17 @@ export function VeritasPage() {
           {status?.lastError ? <span className="truncate text-danger">· {status.lastError}</span> : null}
         </div>
 
-        {/* CLI chat panel */}
+        {/* The shared conversation */}
         <GlassCard className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
-          <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-3 font-mono text-[13px] leading-relaxed">
-            {lines.length === 0 ? (
+          <div ref={transcriptRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-3 font-mono text-[13px] leading-relaxed">
+            {transcript.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-fg-4">
                 <IconTerminal2 size={28} stroke={1.4} />
-                <div className="text-[13px] text-fg-3">Type a task — Veritas runs it on this machine.</div>
-                <div className="text-[12px] text-fg-4">“what agents are running?” · “open Firefox” · “run the tests”</div>
+                <div className="text-[13px] text-fg-3">Ask Veritas anything — it runs it on this machine.</div>
+                <div className="text-[12px] text-fg-4">“what agents are running?” · “open Firefox” · “remember my wifi is ThunderNet”</div>
               </div>
             ) : (
-              lines.map((line, index) => (
-                <div key={index} className="mb-3 whitespace-pre-wrap break-words">
-                  {line.role === 'user' ? (
-                    <div className="text-accent-strong">
-                      <span className="text-fg-4">› </span>
-                      {line.text}
-                    </div>
-                  ) : (
-                    <div className="text-fg">{line.text}</div>
-                  )}
-                </div>
-              ))
+              transcript.map((entry, index) => <Entry key={`${entry.ts}-${index}`} entry={entry} />)
             )}
             {busy ? <div className="text-fg-4">▍Veritas is working…</div> : null}
           </div>
@@ -138,7 +118,7 @@ export function VeritasPage() {
                 }
               }}
               rows={1}
-              placeholder={busy ? 'Veritas is working…' : 'Ask Veritas to do something…'}
+              placeholder={busy ? 'Veritas is working…' : 'Ask Veritas…'}
               className="glass-input min-w-0 flex-1 resize-none rounded-lg px-3 py-2 font-mono text-[13px] leading-relaxed text-fg outline-none placeholder:text-fg-4"
             />
             <GlassButton variant="primary" disabled={!input.trim() || busy} onClick={() => void send()} aria-label="Send to Veritas">
@@ -147,16 +127,30 @@ export function VeritasPage() {
           </div>
         </GlassCard>
 
-        {showSetup ? <TelegramSetup status={status} /> : null}
+        {showSetup && status ? <TelegramSetup status={status} /> : null}
       </div>
     </div>
   )
 }
 
-function TelegramSetup({ status }: { status: VeritasStatus | null }) {
+function Entry({ entry }: { entry: VeritasEntry }) {
+  const fromTelegram = entry.source === 'telegram'
+
+  return (
+    <div className="mb-3 whitespace-pre-wrap break-words">
+      <div className="mb-0.5 flex items-center gap-2 text-[10.5px] tracking-wide text-fg-4 uppercase">
+        <span className={entry.role === 'user' ? 'text-accent-strong' : 'text-fg-3'}>{entry.role === 'user' ? 'you' : 'veritas'}</span>
+        {fromTelegram ? <span className="inline-flex items-center gap-0.5"><IconBrandTelegram size={10} />telegram</span> : null}
+      </div>
+      <div className={cn('text-fg', entry.role === 'user' && 'text-fg-2')}>{entry.text}</div>
+    </div>
+  )
+}
+
+function TelegramSetup({ status }: { status: VeritasStatus }) {
   const [botToken, setBotToken] = useState('')
-  const [chatIds, setChatIds] = useState(status?.allowedChatIds.join(', ') ?? '')
-  const [enabled, setEnabled] = useState(status?.telegramEnabled ?? false)
+  const [chatIds, setChatIds] = useState(status.allowedChatIds.join(', '))
+  const [enabled, setEnabled] = useState(status.telegramEnabled)
   const [saving, setSaving] = useState(false)
 
   const save = async () => {
@@ -188,7 +182,7 @@ function TelegramSetup({ status }: { status: VeritasStatus | null }) {
           <div className="text-[14px] font-semibold text-fg">Telegram</div>
           <div className="text-[12px] text-fg-3">Reach Veritas from your phone. Get a token from @BotFather, your chat id from @userinfobot. A blank token keeps the current one.</div>
         </div>
-        <Pill tone={status?.telegramEnabled ? 'ok' : 'muted'}>{status?.telegramEnabled ? 'On' : 'Off'}</Pill>
+        <Pill tone={status.telegramEnabled ? 'ok' : 'muted'}>{status.telegramEnabled ? 'On' : 'Off'}</Pill>
       </div>
       <div className="flex flex-col gap-3 px-5 pb-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

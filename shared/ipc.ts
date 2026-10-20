@@ -1148,6 +1148,15 @@ export interface AgentSnapshot {
   logTail?: string[]
 }
 
+/** One line of the Veritas conversation, wherever it came from. */
+export interface VeritasEntry {
+  role: 'user' | 'assistant'
+  text: string
+  ts: number
+  /** Which surface the message arrived on. */
+  source: 'app' | 'telegram'
+}
+
 /** State of the Veritas agent (OpenCode-backed) as the shell sees it. */
 export interface VeritasStatus {
   telegramConfigured: boolean
@@ -1156,6 +1165,8 @@ export interface VeritasStatus {
   allowedChatIds: number[]
   /** The agent's OpenCode session. It is persistent, which is what gives the agent its memory. */
   sessionId: string
+  /** The shared conversation: the page and Telegram are the same thread. */
+  transcript: VeritasEntry[]
   busy: boolean
   lastError?: string
 }
