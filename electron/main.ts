@@ -215,6 +215,10 @@ const veritasMcp = new VeritasMcpServer(agents, {
   sendTelegram: text => sendTelegram(text),
   openUrl: url => {
     void shell.openExternal(url)
+  },
+  currentProject: () => {
+    const project = veritasAgent.currentProject()
+    return { id: project.id, name: project.name, path: project.path }
   }
 })
 const crashes = new CrashWatcher(

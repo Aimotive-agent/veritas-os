@@ -27,6 +27,8 @@ interface VeritasShell {
   notify: (title: string, body: string) => void
   sendTelegram: (text: string) => Promise<string>
   openUrl: (url: string) => void
+  /** The project the agent is working in right now (it changes as the user switches). */
+  currentProject: () => { id: string; name: string; path: string }
 }
 
 const SHELL_PAGES = ['overview', 'hermes', 'veritas', 'agents', 'browser', 'missions', 'memory', 'files', 'automations', 'connections', 'settings']
@@ -290,6 +292,15 @@ export class VeritasMcpServer {
           const message = stringArg(args, 'message')
           if (!message) return 'Error: message is required.'
           return shell.sendTelegram(message)
+        }
+      },
+      {
+        name: 'project',
+        description: 'Which project you are working in right now (its name and folder).',
+        inputSchema: { type: 'object', properties: {} },
+        run: async () => {
+          const project = shell.currentProject()
+          return `Project: ${project.name} (folder: ${project.path}). Work on this project's files unless asked otherwise.`
         }
       },
       // The everyday toolkit: files, shell, processes, clipboard, notes, browser.

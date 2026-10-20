@@ -58,7 +58,11 @@ export class VeritasTelegram {
       try {
         await this.poll()
       } catch (error) {
-        log('veritas', `telegram poll error: ${error instanceof Error ? error.message : String(error)}`)
+        const message = error instanceof Error ? error.message : String(error)
+        // A long poll that times out is normal, not a failure.
+        if (!/abort|timed out/i.test(message)) {
+          log('veritas', `telegram poll error: ${message}`)
+        }
         await sleep(2000)
       }
     }
@@ -75,7 +79,7 @@ export class VeritasTelegram {
 
   private async getUpdates(): Promise<TelegramUpdate[]> {
     const url = `${API}/bot${this.config.botToken}/getUpdates?timeout=25&offset=${this.offset}&allowed_updates=${encodeURIComponent(JSON.stringify(['message']))}`
-    const response = await fetch(url, { signal: AbortSignal.timeout(30_000) })
+    const response = await fetch(url, { signal: AbortSignal.timeout(40_000) })
 
     if (!response.ok) {
       throw new Error(`telegram ${response.status}: ${(await response.text()).slice(0, 200)}`)

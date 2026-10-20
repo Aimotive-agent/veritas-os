@@ -22,6 +22,7 @@ const VERITAS_AGENT = {
     '',
     'Use the veritas tools to see and drive the machine:',
     '- list_agents, start_agent, stop_agent, restart_agent, run_agent \u2014 manage every AI agent (Hermes, OpenCode, and any others).',
+    '- project \u2014 which project you are working in right now, and its folder. Work on that project\u2019s files unless Chris says otherwise.',
     '- list_apps, launch_app \u2014 see and launch any installed application.',
     '- list_pages, show_page \u2014 open a page in the Veritas OS shell.',
     '- notify \u2014 send a desktop notification to Chris.',

@@ -1148,6 +1148,16 @@ export interface AgentSnapshot {
   logTail?: string[]
 }
 
+/** A project the Veritas agent works in: its own folder, its own session, its own memory. */
+export interface VeritasProject {
+  id: string
+  name: string
+  /** The folder the agent works in. */
+  path: string
+  /** This project's session, so each project keeps its own memory. */
+  sessionId: string
+}
+
 /** One line of the Veritas conversation, wherever it came from. */
 export interface VeritasEntry {
   role: 'user' | 'assistant'
@@ -1155,6 +1165,18 @@ export interface VeritasEntry {
   ts: number
   /** Which surface the message arrived on. */
   source: 'app' | 'telegram'
+  /** Which project the exchange belongs to. */
+  projectId: string
+}
+
+/** A change to the Veritas agent's configuration. */
+export interface VeritasConfigPatch {
+  telegram?: { botToken?: string; allowedChatIds?: number[]; enabled?: boolean }
+  model?: string
+  visionModel?: string
+  currentProject?: string
+  addProject?: { name: string; path: string }
+  removeProject?: string
 }
 
 /** State of the Veritas agent (OpenCode-backed) as the shell sees it. */
@@ -1163,8 +1185,13 @@ export interface VeritasStatus {
   telegramEnabled: boolean
   /** Which Telegram user ids may talk to Veritas (the bot token is never sent to the shell). */
   allowedChatIds: number[]
-  /** The agent's OpenCode session. It is persistent, which is what gives the agent its memory. */
-  sessionId: string
+  /** The model the agent runs on. */
+  model: string
+  /** The model used when an image is attached (the default one cannot read images). */
+  visionModel: string
+  /** The projects the agent can work in. */
+  projects: VeritasProject[]
+  currentProject: string
   /** The shared conversation: the page and Telegram are the same thread. */
   transcript: VeritasEntry[]
   busy: boolean
