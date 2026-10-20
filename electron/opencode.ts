@@ -10,6 +10,28 @@ import { log } from './log.ts'
  * `Authorization` header counts as header auth, and an `oauth` block (not false) as OAuth.
  */
 
+/**
+ * The OpenCode binary, bypassing the `~/.local/bin/opencode` mise wrapper. That wrapper runs
+ * `mise use -g` before every launch — a network call that takes the global mise lock — which can
+ * block a headless agent for minutes and then time out. The versioned install is the same binary
+ * without the detour, so use it whenever it is there.
+ */
+export function opencodeBin(): string {
+  const candidates = [
+    path.join(os.homedir(), '.opencode', 'bin', 'opencode'),
+    path.join(os.homedir(), '.local', 'share', 'mise', 'installs', 'opencode', 'latest', 'node_modules', '.bin', 'opencode'),
+    path.join(os.homedir(), '.local', 'bin', 'opencode')
+  ]
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate
+    }
+  }
+
+  return 'opencode'
+}
+
 export function listOpencodeMcpServers(): OpencodeMcpServer[] {
   try {
     const file = path.join(os.homedir(), '.config', 'opencode', 'opencode.json')

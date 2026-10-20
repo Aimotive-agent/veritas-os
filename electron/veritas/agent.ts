@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type { VeritasStatus } from '../../shared/ipc.ts'
 import { log } from '../log.ts'
+import { opencodeBin } from '../opencode.ts'
 
 /*
  * The Veritas agent is OpenCode (the best CLI agent), run headless. This module owns its Telegram
@@ -91,8 +92,11 @@ export class VeritasAgent extends EventEmitter {
     this.emit('changed')
 
     try {
+      const bin = opencodeBin()
+      log('veritas', `running the agent via ${bin}`)
+
       const output = await new Promise<string>((resolve, reject) => {
-        execFile('opencode', ['run', '--agent', 'veritas', '--model', this.config.model, '--auto', prompt], { timeout: TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+        execFile(bin, ['run', '--agent', 'veritas', '--model', this.config.model, '--auto', prompt], { timeout: TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
           const text = (stdout || '').trim()
 
           if (error) {

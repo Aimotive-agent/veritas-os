@@ -6,6 +6,7 @@ import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import type { AgentPairResult, AgentSnapshot, AgentSpec, ShellMission } from '../../shared/ipc.ts'
 import { log } from '../log.ts'
+import { opencodeBin } from '../opencode.ts'
 
 /*
  * Extra agents beyond the primary Hermes backend. Each entry is a local process that serves an HTTP
@@ -74,18 +75,7 @@ function isAlive(pid: number): boolean {
   }
 }
 
-function opencodeBin(): string {
-  const candidates = [path.join(os.homedir(), '.opencode/bin/opencode'), path.join(os.homedir(), '.local/bin/opencode')]
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      return candidate
-    }
-  }
-  return 'opencode'
-}
-
-export function builtInAgentSpecs(): AgentSpec[] {
-  return [
+export function builtInAgentSpecs(): AgentSpec[] {  return [
     {
       id: 'opencode',
       name: 'OpenCode',
