@@ -1,8 +1,10 @@
+import { app } from 'electron'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { OpencodeMcpServer } from '../shared/ipc.ts'
 import { log } from './log.ts'
+import { veritasModel } from './veritas/config.ts'
 
 /*
  * Reads OpenCode's configured MCP servers (~/.config/opencode/opencode.json) so the Connections
@@ -110,4 +112,92 @@ export function refreshOpencodeMcpCatalog(): void {
       // The config changed under us; leave it alone.
     }
   }, 4000)
+}
+
+/** The port the Veritas MCP server listens on (electron/mcp/server.ts). */
+const VERITAS_MCP_PORT = 4317
+
+interface VeritasAgentDefinition {
+  description: string
+  mode: string
+  system: string
+}
+
+/** The agent's definition, shared with scripts/configure-opencode.mjs. */
+function veritasAgentDefinition(): VeritasAgentDefinition | null {
+  const file = path.join(app.getAppPath(), 'resources', 'veritas-agent.json')
+
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')) as VeritasAgentDefinition
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Make sure OpenCode knows the `veritas` agent and the Veritas MCP server.
+ *
+ * The agent is run headless as `opencode run --agent veritas`, so without the definition OpenCode
+ * answers "Agent not found" and the chat is dead. OpenCode also resets its config now and then, and
+ * a fresh config has neither the agent nor the MCP server, so this runs at every start: it adds
+ * what is missing and leaves everything else (the user's providers, models and other MCP servers)
+ * exactly as it is.
+ */
+export function ensureVeritasAgent(): boolean {
+  const file = path.join(os.homedir(), '.config', 'opencode', 'opencode.json')
+  const candidates = [file, path.join(os.homedir(), '.config', 'opencode', 'config.json')]
+  let configPath = ''
+  let config: Record<string, any> = {}
+
+  for (const candidate of candidates) {
+    try {
+      config = JSON.parse(fs.readFileSync(candidate, 'utf8')) as Record<string, any>
+      configPath = candidate
+      break
+    } catch {
+      // Not here.
+    }
+  }
+
+  const definition = veritasAgentDefinition()
+
+  if (!configPath || !definition) {
+    log('opencode', 'could not find the OpenCode config to register the veritas agent')
+    return false
+  }
+
+  // The model must exist in the user's OpenCode config, so prefer the one Veritas OS already uses.
+  const model = veritasModel() ?? (typeof config.model === 'string' ? config.model : undefined) ?? 'deepseek/deepseek-v4-pro'
+  const servers = (config.mcp ??= {}).servers ??= {}
+  const agents = (config.agents ??= {})
+
+  const mcpServer = { type: 'remote', url: `http://127.0.0.1:${VERITAS_MCP_PORT}/mcp` }
+  const agent = { description: definition.description, mode: definition.mode, model, system: definition.system }
+
+  const serverChanged = JSON.stringify(servers.veritas ?? null) !== JSON.stringify(mcpServer)
+  const agentChanged = JSON.stringify(agents.veritas ?? null) !== JSON.stringify(agent)
+
+  if (!serverChanged && !agentChanged) {
+    return false
+  }
+
+  servers.veritas = mcpServer
+  agents.veritas = agent
+
+  // OpenCode v2 reads the `agents` map (plural); a stale singular `agent.veritas` would win.
+  if (config.agent?.veritas) {
+    delete config.agent.veritas
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
+    log('opencode', `registered the veritas agent (${model}) and its MCP server in ${configPath}`)
+
+    return true
+  } catch (error) {
+    log('opencode', `could not register the veritas agent: ${error instanceof Error ? error.message : String(error)}`)
+
+    return false
+  }
 }
