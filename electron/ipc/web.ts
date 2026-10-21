@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { IPC, type WebOpenOptions, type WebViewBounds, type WebViewEvent } from '../../shared/ipc.ts'
 import { isViewable } from '../../shared/viewer.ts'
 import { log } from '../log.ts'
+import { opencodeGuestSeed } from '../opencode-web.ts'
 
 /*
  * Embedded web pages. Veritas OS is a whole environment, so a web page (the provider sign-in portal,
@@ -229,7 +230,17 @@ export class WebViews {
     this.entries.set(id, entry)
     const contents = entry.kind === 'view' ? entry.view.webContents : entry.win.webContents
     this.guard(id, contents, new URL(url).origin)
-    void contents.loadURL(url).catch(error => log('web', `${id}: load failed: ${error instanceof Error ? error.message : String(error)}`))
+    // The OpenCode client asks for a pairing link unless it already knows the service, so it is
+    // connected to the shared service first; the page then loads and connects on its own.
+    const seed = opencodeGuestSeed(url, GUEST_PREFERENCES)
+    const load = () => contents.loadURL(url).catch(error => log('web', `${id}: load failed: ${error instanceof Error ? error.message : String(error)}`))
+
+    if (seed) {
+      void seed.then(load)
+    } else {
+      void load()
+    }
+
     log('web', `opened ${id} (${entry.kind}) ${url}`)
 
     return id
